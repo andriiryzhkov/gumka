@@ -30,6 +30,7 @@ Current status and scope: [docs/overview.md](docs/overview.md).
 | `crates/gumka-app` | The egui app (binary `gumka`). |
 | `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
+| `rust-toolchain.toml` | The pinned Rust version, used locally and in CI. |
 | `models/` | Downloaded models (git-ignored). |
 | `.github/workflows` | CI on pull requests, the nightly build on pushes to `main`, releases on `release-*` tags. |
 | `assets/logo` | The logo SVGs. |
@@ -129,7 +130,8 @@ and Windows from a Mac needs a dummy Little CMS library; see
 - Don't commit, push, tag or create branches unless asked. Pushing to `main` publishes a nightly
   build, and pushing a `release-*` tag publishes a release.
 - Don't download models or add dependencies without a reason; pin versions, and prefer crates
-  already in `Cargo.lock`.
+  already in `Cargo.lock`. CI runner images, actions (by commit) and the Rust version are pinned
+  too; change them only on purpose ([docs/packaging.md](docs/packaging.md#ci-and-releases)).
 - Never send personal data (names, email addresses, files) to external services.
 - Ask when a decision changes behavior users rely on (file formats, what is kept or dropped on
   save, defaults). Record decisions in the relevant document in `docs/`.

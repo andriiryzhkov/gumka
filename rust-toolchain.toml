@@ -1,0 +1,6 @@
+# The Rust version Gumka is built and checked with, locally and in CI (rustup reads this file).
+# Raise it on purpose: a new release brings new lints, and CI treats warnings as errors.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

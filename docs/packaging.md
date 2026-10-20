@@ -11,7 +11,8 @@ cargo xtask bundle --no-dmg      # the app only
 
 `cargo xtask bundle` (`xtask/src/bundle.rs`) runs on a Mac and takes about 20 s once the app is
 built (the release build itself takes longer the first time; `--universal` builds both
-architectures and joins them with `lipo`). It:
+architectures and joins them with `lipo`, and needs `rustup target add x86_64-apple-darwin`
+once for the pinned toolchain). It:
 
 1. checks every model file for this platform against `models.toml` (size and SHA-256);
 2. builds `gumka-app` in release mode;
@@ -42,6 +43,16 @@ Three GitHub Actions workflows in `.github/workflows`:
 
 The models are downloaded on the runner by `cargo xtask models`, cached by the hash of
 `models.toml`, and checked against it every time.
+
+Nothing in the workflows moves on its own:
+
+- Runner images are pinned by label (`macos-26`, `windows-2025-vs2026`, `ubuntu-26.04`), never
+  `-latest`. To move to a newer image, change the label and let CI show what breaks.
+- Actions are pinned to a release's commit, with the version in a comment
+  (`actions/checkout@<sha> # v7.0.1`). To update one, take the commit of its new release tag
+  (`gh api repos/actions/checkout/commits/<tag> --jq .sha`).
+- The Rust version comes from `rust-toolchain.toml`; rustup, preinstalled on the runners,
+  installs it. No toolchain action is used.
 
 To release a version:
 

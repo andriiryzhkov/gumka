@@ -2,7 +2,10 @@
 
 ## Requirements
 
-- Rust stable, installed with [rustup](https://rustup.rs).
+- Rust, installed with [rustup](https://rustup.rs). The version is pinned in
+  `rust-toolchain.toml` (rustup installs it on first use, with clippy and rustfmt), the same
+  locally and in CI. Raise it on purpose, in its own change: new releases bring new lints, and CI
+  treats warnings as errors.
 - macOS 13 or later to run the models (Core ML's asynchronous compile needs it). Apple Silicon is
   the main target. `MACOSX_DEPLOYMENT_TARGET = "13.0"` is set in `.cargo/config.toml` (a value
   already in the environment wins); the app bundle's Info.plist must say the same

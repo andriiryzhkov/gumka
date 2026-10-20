@@ -20,16 +20,17 @@ jobs:
   release:
     name: Release ${{ github.ref_name }}
     needs: test
-    runs-on: macos-latest
+    runs-on: macos-26
     permissions:
       contents: write
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-apple-darwin
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
       - name: Check the version
         id: version
         run: |
@@ -41,9 +42,9 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Restore the models
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: models
           key: models-${{ hashFiles('models.toml') }}
