@@ -38,8 +38,8 @@ Three GitHub Actions workflows in `.github/workflows`:
 | Workflow | Runs on | Does |
 |---|---|---|
 | `ci.yml` | every pull request (and when called by the other two) | format, clippy and tests on macOS, Windows and Linux, warnings as errors |
-| `nightly.yml` | every push to `main` | CI, then `cargo xtask bundle` on macOS; replaces the rolling **nightly** pre-release (tag `nightly`, `Gumka-nightly-arm64.dmg` and `SHA256SUMS.txt`) and keeps the disk image as a workflow artifact for 14 days. Only the newest push is built. |
-| `release.yml` | a pushed tag `release-<version>` | CI, then `cargo xtask bundle --universal`; publishes the GitHub release `Gumka <version>` with the disk image, `SHA256SUMS.txt` and generated notes. A version with a hyphen (`0.2.0-beta.1`) is a pre-release. |
+| `nightly.yml` | every push to `main` | CI, then `cargo xtask bundle` on macOS; replaces the rolling **nightly** pre-release (tag `nightly`, `Gumka-nightly-arm64.dmg`) and keeps the disk image as a workflow artifact for 14 days. Only the newest push is built. |
+| `release.yml` | a pushed tag `release-<version>` | CI, then `cargo xtask bundle --universal`; publishes the GitHub release `Gumka <version>` with the disk image and generated notes. A version with a hyphen (`0.2.0-beta.1`) is a pre-release. |
 
 The models are downloaded on the runner by `cargo xtask models`, cached by the hash of
 `models.toml`, and checked against it every time.

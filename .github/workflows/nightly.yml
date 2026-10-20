@@ -45,7 +45,6 @@ jobs:
         run: |
           mkdir dist
           mv target/bundle/Gumka-*-arm64.dmg dist/Gumka-nightly-arm64.dmg
-          cd dist && shasum -a 256 -- *.dmg > SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gumka-nightly-${{ github.sha }}
