@@ -12,18 +12,35 @@
   way): the start screen speaks of "your photo editor".
 - Recommended export settings for the host: TIFF, 16-bit, Adobe RGB or Display P3. ProPhoto
   works too (converted for the model, see [color.md](color.md)), but is wider than needed.
-- The app bundle must declare document types in Info.plist (TIFF at minimum) to appear as a valid
-  "Edit With" target.
 
 ## How files arrive
 
 - macOS: the file arrives as an Apple "open documents" event, NOT as a command-line argument
-  (the same for Finder "Open With" and dropping on the Dock icon). winit (under eframe) doesn't
-  handle `application:openFiles:` / `openURLs:`. Add those methods to winit's app delegate at
-  runtime via objc2 and queue the paths for the UI. Install the handler BEFORE eframe starts:
-  the event can arrive before the app creation closure runs. winit creates the delegate when the
-  event loop is built, so this needs our own event loop (`eframe::create_native`). Not done yet.
+  (the same for Finder "Open With", dropping on the Dock icon and a RAW editor's Edit With).
+  winit (under eframe) doesn't handle `application:openURLs:`, so `gumka-app/src/open_files.rs`
+  adds it to winit's app delegate at runtime. A file that starts Gumka arrives while it is still
+  launching, before the app is created, so `main.rs` builds the event loop itself (which makes
+  winit's delegate), installs the handler, and only then runs eframe on it
+  (`eframe::create_native`). The file waits until the app takes it, which opens it like the
+  open panel does: asking about unsaved changes, waiting for a running erase, and waiting while
+  a dialog is up. Of several files in one event the first is opened (one photo at a time).
+- Info.plist declares TIFF, PNG and JPEG (role Editor, rank Alternate), so Gumka is offered under
+  Open With and Edit With without becoming the default app for those files.
 - Windows / Linux: the path arrives as a command-line argument.
+
+## Save & Return
+
+- A photo another app sent (the open-documents event on macOS, the command-line path elsewhere)
+  gets a "Save & Return" button at the right of the toolbar, the toolbar's primary action.
+  Photos opened with the open panel or dropped on the window don't. The app keeps the sent path
+  until it opens a file (`GumkaApp::sent`), and marks the document only if that file is the one
+  sent (`Document::sent`); a sent file that fails to open doesn't mark the next one.
+- It saves in place and quits; macOS then brings back the app that sent the photo, which picks
+  up the saved file. Without unsaved changes it just quits. During an erase it waits for the
+  pixels, then saves and quits. A failed save says why and Gumka stays.
+- Saving as another file ends it: the button goes away, since the sending app waits for the
+  original. While a save waits for the pixels the button is off, so a waiting Save As stays the
+  save that happens.
 
 ## Quitting
 

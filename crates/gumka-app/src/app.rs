@@ -157,6 +157,8 @@ pub struct GumkaApp {
     /// The file from the command line, opened on the first frame: only then does egui know
     /// how large a texture the GPU takes, which the canvas needs.
     startup: Option<PathBuf>,
+    /// A file another app sent, until it is opened: that document offers Save & Return.
+    sent: Option<PathBuf>,
     /// How many of the files hovering over the window were given up on: AppKit can end a drag
     /// without telling a window that was busy, and then the hover never ends.
     stale_hover: usize,
@@ -169,6 +171,7 @@ impl GumkaApp {
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         crate::quit::install(&cc.egui_ctx);
+        crate::open_files::attach(&cc.egui_ctx);
         Self {
             doc: None,
             canvas: None,
@@ -205,6 +208,7 @@ impl GumkaApp {
                 advanced: false,
             },
             startup: path,
+            sent: None,
             stale_hover: 0,
         }
     }
@@ -271,8 +275,10 @@ impl GumkaApp {
             self.waiting = Some(Pending::Open(path));
             return;
         }
+        let sent = self.sent.take().is_some_and(|sent| sent == path);
         match Document::open(path.clone()) {
-            Ok(doc) => {
+            Ok(mut doc) => {
+                doc.sent = sent;
                 self.end_selection();
                 self.canvas = Some(Canvas::new(
                     ctx,
@@ -299,6 +305,21 @@ impl GumkaApp {
         match &self.doc {
             Some(doc) => self.save_to(doc.path.clone()),
             None => false,
+        }
+    }
+
+    /// Save & Return, for a photo another app sent: saves it in place (once the worker gives the
+    /// pixels back, if it has them) and quits, so that macOS brings back the app it came from.
+    /// A failed save says why and stays. Does nothing while a save waits (Save As, say): that
+    /// one happens first.
+    fn save_and_return(&mut self, ctx: &egui::Context) {
+        if self.waiting_save.is_some() {
+            return;
+        }
+        if !self.has_unsaved_work() || self.save() {
+            self.run_pending(ctx, Pending::Quit);
+        } else if self.waiting_save.is_some() {
+            self.waiting = Some(Pending::Quit);
         }
     }
 
@@ -333,6 +354,8 @@ impl GumkaApp {
         };
         match doc.picture.save(&path) {
             Ok(()) => {
+                // Saved as another file, it's no longer the one the sending app waits for.
+                doc.sent &= path == doc.path;
                 doc.path = path;
                 doc.mark_saved();
                 true
@@ -871,6 +894,16 @@ impl GumkaApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                // Save & Return, for a photo another app sent; off while a save waits.
+                if self.doc.as_ref().is_some_and(|d| d.sent) {
+                    let enabled = self.waiting_save.is_none();
+                    let button = widgets::accent_button(ui, "Save & Return", enabled)
+                        .on_hover_text("Save the photo and quit, back to the app that sent it");
+                    if button.clicked() {
+                        self.save_and_return(&ctx);
+                    }
+                    ui.add_space(6.0);
+                }
                 // Zoom menu.
                 let zoom = self
                     .canvas
@@ -1470,7 +1503,6 @@ impl GumkaApp {
                     );
                 });
             }
-            widgets::hint(ui, "Opening files sent by other apps comes next.");
         });
     }
 
@@ -1615,6 +1647,14 @@ impl eframe::App for GumkaApp {
         }
         self.poll_worker();
         self.run_waiting(ctx);
+        // A file another app sent (Finder, a RAW editor's Edit With) opens like one picked in
+        // the open panel. It waits while a dialog is up, as dropped files are ignored then.
+        if !self.dialog_open()
+            && let Some(path) = crate::open_files::take()
+        {
+            self.sent = Some(path.clone());
+            self.request(ctx, Pending::Open(path));
+        }
         crate::quit::set_unsaved(self.has_unsaved_work() && !self.allow_close);
         // After the replies, so that a close sees an erase that came back this frame.
         self.handle_close(ctx);
@@ -1624,6 +1664,8 @@ impl eframe::App for GumkaApp {
         let ctx = ui.ctx().clone();
         self.color_space.keep(frame);
         if let Some(path) = self.startup.take() {
+            // On Windows and Linux, another app's Edit With hands the file over this way.
+            self.sent = Some(path.clone());
             self.open(&ctx, path);
         }
         self.handle_input(&ctx);
@@ -1853,6 +1895,7 @@ mod tests {
                 advanced: false,
             },
             startup: None,
+            sent: None,
             stale_hover: 0,
         }
     }
@@ -3056,6 +3099,132 @@ mod tests {
         assert!(
             matches!(&h.app.pending, Some(Pending::Open(path)) if *path == b),
             "the open still comes, asking about the erase"
+        );
+    }
+
+    /// Opens `path` as a file another app sent.
+    fn open_sent(h: &mut Harness, path: &Path) {
+        h.app.sent = Some(path.to_path_buf());
+        h.open(path);
+    }
+
+    #[test]
+    fn only_a_photo_another_app_sent_offers_save_and_return() {
+        let mut h = Harness::new("sent");
+        h.ready();
+        let (a, b) = (h.picture("a.png", 40, 30), h.picture("b.png", 24, 36));
+        open_sent(&mut h, &a);
+        assert!(h.doc().sent);
+        h.drop_file(&b);
+        assert_eq!(h.doc().path, b);
+        assert!(!h.doc().sent, "a dropped file wasn't sent");
+        // A sent file that fails to open doesn't make the next one sent.
+        let bad = h.dir.join("bad.png");
+        std::fs::write(&bad, b"not a picture").unwrap();
+        h.app.sent = Some(bad.clone());
+        h.app.open(&h.ctx.clone(), bad);
+        h.app.message = None;
+        h.open(&a);
+        assert!(!h.doc().sent);
+    }
+
+    #[test]
+    fn save_and_return_saves_then_quits() {
+        let mut h = Harness::new("save-return");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        h.erase();
+        let opened = modified(&a);
+        std::thread::sleep(Duration::from_millis(20));
+        h.app.save_and_return(&h.ctx.clone());
+        assert_ne!(modified(&a), opened, "saved in place");
+        assert!(!h.app.is_dirty() && h.app.allow_close, "and quits");
+    }
+
+    #[test]
+    fn save_and_return_without_changes_just_quits() {
+        let mut h = Harness::new("save-return-clean");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        let opened = modified(&a);
+        h.app.save_and_return(&h.ctx.clone());
+        assert_eq!(modified(&a), opened, "nothing to save");
+        assert!(h.app.allow_close);
+    }
+
+    #[test]
+    fn save_and_return_during_an_erase_waits_for_it() {
+        let mut h = Harness::new("save-return-erase");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        let opened = modified(&a);
+        std::thread::sleep(Duration::from_millis(20));
+        let pixels = start_erase(&mut h);
+        h.app.save_and_return(&h.ctx.clone());
+        assert!(!h.app.allow_close, "waits for the erase");
+        assert_eq!(modified(&a), opened);
+        h.fake.reply(erased(pixels));
+        let commands = h.frame(vec![]);
+        assert_ne!(modified(&a), opened, "saved with the erase");
+        assert!(h.app.allow_close && commands.contains(&ViewportCommand::Close));
+    }
+
+    #[test]
+    fn saving_as_another_file_ends_save_and_return() {
+        let mut h = Harness::new("save-return-save-as");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        h.erase();
+        assert!(h.app.save_to(a.clone()));
+        assert!(h.doc().sent, "saved in place, still sent");
+        h.erase();
+        assert!(h.app.save_to(h.dir.join("copy.png")));
+        assert!(!h.doc().sent);
+    }
+
+    #[test]
+    fn save_and_return_leaves_a_waiting_save_as_alone() {
+        let mut h = Harness::new("save-return-waiting");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        let opened = modified(&a);
+        let pixels = start_erase(&mut h);
+        let copy = h.dir.join("copy.png");
+        assert!(!h.app.save_to(copy.clone()), "waits for the erase");
+        h.app.save_and_return(&h.ctx.clone());
+        h.fake.reply(erased(pixels));
+        let commands = h.frame(vec![]);
+        assert!(
+            copy.exists() && modified(&a) == opened,
+            "only the copy is saved"
+        );
+        assert!(!h.doc().sent && !h.app.allow_close);
+        assert!(!commands.contains(&ViewportCommand::Close));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_and_return_stays_when_the_save_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut h = Harness::new("save-return-fails");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        h.erase();
+        std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o444)).unwrap();
+        h.app.save_and_return(&h.ctx.clone());
+        std::fs::set_permissions(&a, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if h.app.message.is_none() {
+            return; // running as root, which may write anyway
+        }
+        assert!(
+            h.app.is_dirty() && !h.app.allow_close,
+            "stays, with the error shown"
         );
     }
 

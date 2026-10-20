@@ -53,7 +53,9 @@ it is used, cfg-gated with no-op stand-ins elsewhere.
   document and its history (undo stores only changed regions).
 - `worker.rs`: the inference thread. `models_page.rs`: the Models page.
 - `display.rs`: tags the window's Metal layer Display P3 ([color.md](color.md)). `quit.rs`:
-  routes macOS quits through "Save changes?" ([opening-and-saving.md](opening-and-saving.md)).
+  routes macOS quits through "Save changes?"; `open_files.rs`: takes files other apps send
+  ([opening-and-saving.md](opening-and-saving.md)). Both add methods to winit's app delegate
+  through `delegate.rs`.
 - `theme.rs`, `widgets.rs`, `icons.rs`: styling and shared widgets ([ui.md](ui.md)). Fonts are
   in `crates/gumka-app/assets/fonts` (IBM Plex, OFL).
 
@@ -88,5 +90,5 @@ it is used, cfg-gated with no-op stand-ins elsewhere.
 - The workspace denies `unsafe_op_in_unsafe_fn` and warns on `undocumented_unsafe_blocks`
   (an error in CI): every `unsafe` block has a `// SAFETY:` comment.
 - `unsafe` stays in the OS and framework bindings: Core ML and Core Video in
-  `gumka-infer/src/coreml.rs`, AppKit and QuartzCore in `gumka-app/src/display.rs` and
-  `quit.rs`.
+  `gumka-infer/src/coreml.rs`, AppKit and QuartzCore in `gumka-app/src/display.rs`, `quit.rs`,
+  `open_files.rs` and `delegate.rs`.

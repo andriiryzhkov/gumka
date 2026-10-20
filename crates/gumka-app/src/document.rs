@@ -47,6 +47,9 @@ pub struct HistoryRow {
 
 pub struct Document {
     pub path: PathBuf,
+    /// Another app sent it (a RAW editor's Edit With, Finder, the Dock, or a command line):
+    /// the toolbar offers Save & Return.
+    pub sent: bool,
     pub picture: Picture,
     /// Brush strokes are painted straight into it, and count for [`Self::has_mask`] once they
     /// are recorded with [`Self::push_stroke`].
@@ -79,6 +82,7 @@ impl Document {
         Self {
             opened_as: file_name(&path),
             path,
+            sent: false,
             picture,
             mask: Mask::new(width, height),
             has_mask: false,

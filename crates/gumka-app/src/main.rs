@@ -4,10 +4,13 @@
 
 mod app;
 mod canvas;
+#[cfg(target_os = "macos")]
+mod delegate;
 mod display;
 mod document;
 mod icons;
 mod models_page;
+mod open_files;
 mod quit;
 mod theme;
 mod widgets;
@@ -29,11 +32,20 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    eframe::run_native(
+    // Our own event loop rather than eframe::run_native, so that the handler for files other
+    // apps send is in place before the loop runs: a file that starts Gumka arrives while it is
+    // still launching.
+    let event_loop =
+        winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    open_files::install();
+    let mut app = eframe::create_native(
         "Gumka",
         options,
         Box::new(move |cc| Ok(Box::new(app::GumkaApp::new(cc, path)))),
-    )
+        &event_loop,
+    );
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }
 
 /// The logo (assets/logo/gumka-icon.svg) rendered for the Dock and the window.

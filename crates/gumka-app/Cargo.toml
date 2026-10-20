@@ -20,6 +20,8 @@ eframe = { version = "0.37.0", default-features = false, features = ["accesskit"
 egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
 resvg = { version = "0.45.1", default-features = false }
 rfd = "0.17.2"
+# Built directly (not through eframe::run_native) to install handlers first; see main.rs.
+winit = { version = "0.30.13", default-features = false }
 
 # Tagging the window's Metal layer with its color space (see display.rs), and asking about
 # unsaved changes on Quit (see quit.rs).
@@ -40,6 +42,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSKeyValueObserving",
     "NSObject",
     "NSString",
+    "NSURL",
 ] }
 objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
     "std",

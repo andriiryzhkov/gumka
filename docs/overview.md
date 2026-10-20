@@ -25,9 +25,12 @@ Working:
 - `cargo xtask bundle`: an unsigned `Gumka.app` and disk image with the models bundled
   ([packaging.md](packaging.md)).
 
-Not yet: other tools, the API backend, a native menu bar, recent files, the macOS
-open-documents handler (needed for "Edit With" from other apps), signing and notarization, downloads
-of optional models, `gumka-platform`, saving on a background thread.
+- Opening files sent by other apps on macOS: Finder's Open With, the Dock, a RAW editor's
+  Edit With ([opening-and-saving.md](opening-and-saving.md#how-files-arrive)), and Save &
+  Return to send the result back ([opening-and-saving.md](opening-and-saving.md#save--return)).
+
+Not yet: other tools, the API backend, a native menu bar, recent files, signing and
+notarization, downloads of optional models, `gumka-platform`, saving on a background thread.
 
 Undecided: model choice per tool (options A/B/C on the design canvas).
 
@@ -60,9 +63,8 @@ them if the code argues otherwise, but keep the principles.
    (Done.)
 3. egui app, standalone: open a TIFF (dialog or drag-and-drop), color-correct display, paint a
    mask, erase, undo, Save / Save As. (Done.)
-4. "Edit With" round trip from a RAW editor on macOS, first Capture One (open-documents handler +
-   Info.plist). The app
-   bundle is done.
+4. "Edit With" round trip from a RAW editor on macOS, first Capture One. (Done: the app bundle,
+   its document types, the open-documents handler and Save & Return.)
 5. SAM click-to-select. (Done.)
 6. Polish: brush-size shortcut (done), before/after toggle (done), model choice.
 

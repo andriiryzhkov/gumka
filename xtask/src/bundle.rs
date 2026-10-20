@@ -201,6 +201,7 @@ fn info_plist() -> String {
             "<string>Free software under the GNU GPL, version 3 or later.</string>".to_owned(),
         ),
         ("NSSupportsAutomaticGraphicsSwitching", "<true/>".to_owned()),
+        ("CFBundleDocumentTypes", document_types()),
     ];
     let mut plist = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -212,6 +213,23 @@ fn info_plist() -> String {
         plist += &format!("\t<key>{key}</key>\n\t{value}\n");
     }
     plist + "</dict>\n</plist>\n"
+}
+
+/// The files Gumka opens, so that it is offered under Open With and as a RAW editor's
+/// external editor: as an editor, but never the default app for them (rank Alternate).
+fn document_types() -> String {
+    let types = [
+        ("TIFF image", "public.tiff"),
+        ("PNG image", "public.png"),
+        ("JPEG image", "public.jpeg"),
+    ];
+    let mut array = String::from("<array>\n");
+    for (name, uti) in types {
+        array += &format!(
+            "\t\t<dict>\n             \t\t\t<key>CFBundleTypeName</key>\n\t\t\t<string>{name}</string>\n             \t\t\t<key>CFBundleTypeRole</key>\n\t\t\t<string>Editor</string>\n             \t\t\t<key>LSHandlerRank</key>\n\t\t\t<string>Alternate</string>\n             \t\t\t<key>LSItemContentTypes</key>\n             \t\t\t<array>\n\t\t\t\t<string>{uti}</string>\n\t\t\t</array>\n             \t\t</dict>\n"
+        );
+    }
+    array + "\t</array>"
 }
 
 fn lint_plist(path: &Path) -> Result<(), String> {

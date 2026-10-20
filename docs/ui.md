@@ -5,14 +5,16 @@
 - A Capture One-style workspace with a flow like IOPaint's (paint, one action, history). Design
   canvas (private): <https://claude.ai/artifact/EUfaeMAVhRFdEcP3J9EZRR>
 - Layout: title bar; toolbar with file actions, cursor tools (brush, remove from mask, select
-  object, pan), undo/redo, before/after, zoom, and "Save & Return" when opened by a host app;
-  left tool rail (Erase, Fill, Extend, Upscale); viewer; right inspector; status bar.
+  object, pan), undo/redo, before/after, zoom, and "Save & Return" for a photo another app sent
+  ([opening-and-saving.md](opening-and-saving.md#save--return)); left tool rail (Erase, Fill,
+  Extend, Upscale); viewer; right inspector; status bar.
 - Every tool uses the same inspector, driven by the tool's declaration: name and input (mask,
   mask + prompt, canvas, whole image), collapsible setting sections, a Model section with "Runs
   on: This Mac | API" (API only for models too large to bundle), history, and one primary
   action. Adding a tool should not need new layout code.
 - Neutral dark grays and a mid-gray viewer. One amber accent (#F2A541), only for the primary
-  action and the active tool: switches, links, selected buttons and the Models page's rail icon
+  action (the inspector's, and Save & Return in the toolbar for a sent photo) and the active
+  tool: switches, links, selected buttons and the Models page's rail icon
   use neutral colors. A badge shows whenever the API is in use.
 - IBM Plex Sans / Mono (OFL), embedded in the app (`crates/gumka-app/assets/fonts`). Colors and
   styles are in `gumka-app/src/theme.rs`.

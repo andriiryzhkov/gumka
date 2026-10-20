@@ -20,7 +20,8 @@ once for the pinned toolchain). It:
    - `Contents/MacOS/Gumka`, the executable;
    - `Contents/Info.plist`: identifier `io.github.andriiryzhkov.gumka`, the workspace version,
      `LSMinimumSystemVersion` 13.0 (matching `MACOSX_DEPLOYMENT_TARGET`), the photography
-     category, high resolution;
+     category, high resolution, and the document types (TIFF, PNG, JPEG as an editor, rank
+     Alternate) that list Gumka under Open With and Edit With;
    - `Contents/Resources/AppIcon.icns`, rendered from `assets/logo` (the small logo at 16 and
      32 pixels) and packed with `iconutil`;
    - `Contents/Resources/models/`: every package compiled to `.mlmodelc` with Core ML (no Xcode
@@ -98,14 +99,6 @@ Program), signing with the hardened runtime and a secure timestamp
 (`codesign --options runtime --timestamp`), then `xcrun notarytool submit … --wait` and
 `xcrun stapler staple` on the disk image. No entitlements are expected to be needed (no sandbox).
 Notarizing needs Xcode selected (`sudo xcode-select -s /Applications/Xcode.app`).
-
-## Still missing for "Edit With"
-
-- The open-documents handler ([opening-and-saving.md](opening-and-saving.md#how-files-arrive)):
-  without it, a file sent by Finder, the Dock or a RAW editor doesn't reach the app.
-- Then `CFBundleDocumentTypes` in Info.plist (TIFF, PNG, JPEG; role Editor, rank Alternate), so
-  Gumka is offered under Open With and Edit With. They are left out until the handler exists, so
-  that Open With never opens Gumka without the file.
 
 ## Other platforms (later)
 

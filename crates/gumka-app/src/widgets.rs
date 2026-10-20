@@ -390,6 +390,30 @@ pub fn primary_button(
 }
 
 /// A plain button sized to the row height.
+/// A toolbar-sized button in the accent color, for the main action there (Save & Return).
+pub fn accent_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), FontId::new(12.5, semibold()), ON_ACCENT);
+    let size = vec2(galley.size().x + 24.0, 30.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
+    let fill = match (enabled, response.hovered()) {
+        (false, _) => Color32::from_rgb(0x6b, 0x55, 0x36),
+        (true, true) => Color32::from_rgb(0xff, 0xb5, 0x55),
+        (true, false) => ACCENT,
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 6.0, fill);
+    painter.galley(rect.center() - galley.size() / 2.0, galley, ON_ACCENT);
+    response
+}
+
 pub fn button(ui: &mut Ui, text: &str, enabled: bool, width: Option<f32>) -> Response {
     let mut button = egui::Button::new(RichText::new(text).size(12.0)).min_size(vec2(0.0, 28.0));
     if let Some(width) = width {

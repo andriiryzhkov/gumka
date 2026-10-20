@@ -94,8 +94,9 @@ and Windows from a Mac needs a dummy Little CMS library; see
 - Make the smallest change that fixes the cause. No speculative abstractions; don't build later
   tools early.
 - `unsafe` only in the OS and framework bindings: Core ML and Core Video in
-  `gumka-infer/src/coreml.rs`, AppKit and QuartzCore in `gumka-app/src/display.rs` and
-  `quit.rs`. Every `unsafe` block has a `// SAFETY:` comment; the workspace lints enforce it.
+  `gumka-infer/src/coreml.rs`, AppKit and QuartzCore in `gumka-app/src/display.rs`, `quit.rs`,
+  `open_files.rs` and `delegate.rs`. Every `unsafe` block has a `// SAFETY:` comment; the
+  workspace lints enforce it.
 - Platform-specific code is `#[cfg(target_os = ...)]`-gated with a no-op stand-in for the other
   platforms, so every target builds.
 - User-facing messages are short and specific ("<name> is read-only"), and say what the user can
