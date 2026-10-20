@@ -84,9 +84,12 @@ itself carries no signature, and nothing is notarized.
 
 - On the Mac that built it, the app opens normally.
 - On another Mac, the downloaded disk image is quarantined, so Gatekeeper refuses to open the
-  app at first ("can't be opened" / "Apple could not verify"). Copy it to `/Applications`, try to
-  open it once, then choose **Open Anyway** in System Settings → Privacy & Security. Or remove the
-  quarantine from a terminal: `xattr -dr com.apple.quarantine /Applications/Gumka.app`.
+  app at first ("can't be opened" / "Apple could not verify"). Remove the quarantine from the disk
+  image before opening it (the app copied from it then isn't quarantined either):
+  `xattr -d com.apple.quarantine ~/Downloads/Gumka-*.dmg`. If Gumka is already installed:
+  `xattr -dr com.apple.quarantine /Applications/Gumka.app`. Without a terminal: try to open it
+  once, then choose **Open Anyway** in System Settings → Privacy & Security. The nightly and
+  release notes say the same.
 - Opening it from Downloads without moving it runs it from a random path (App Translocation);
   that works, but copying it to `/Applications` first is better.
 

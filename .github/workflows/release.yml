@@ -66,8 +66,18 @@ jobs:
           cat > notes.md <<'EOF'
           For Macs with macOS 13 or later (Apple Silicon and Intel).
 
-          The app isn't signed. Copy it to Applications, open it once, then choose **Open Anyway**
-          in System Settings → Privacy & Security.
+          The app isn't signed, so macOS blocks it at first. Before opening the disk image, remove
+          the quarantine from it:
+
+          ```sh
+          xattr -d com.apple.quarantine ~/Downloads/Gumka-*.dmg
+          ```
+
+          If Gumka is already installed, run:
+
+          ```sh
+          xattr -dr com.apple.quarantine /Applications/Gumka.app
+          ```
           EOF
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag "${prerelease[@]}" \
             --title "Gumka $VERSION" --generate-notes --notes "$(cat notes.md)"

@@ -22,8 +22,18 @@ cargo run --release -p gumka-cli -- erase in.tif mask.png out.tif
 cargo xtask bundle                               # Gumka.app and a disk image in target/bundle
 ```
 
-The app built by `cargo xtask bundle` carries the models and isn't signed: on another Mac, open it
-once, then choose Open Anyway in System Settings → Privacy & Security.
+The app built by `cargo xtask bundle` carries the models and isn't signed, so on another Mac
+macOS blocks it at first. Before opening a downloaded disk image, remove the quarantine from it:
+
+```sh
+xattr -d com.apple.quarantine ~/Downloads/Gumka-*.dmg
+```
+
+If Gumka is already installed, run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Gumka.app
+```
 
 In the app: open a TIFF, PNG or JPEG (⌘O or drag it onto the window), paint over what to
 remove, press Return. Option-drag removes from the mask, Esc clears it, `[` and `]` change the

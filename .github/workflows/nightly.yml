@@ -54,13 +54,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<EOF
-          The latest build of \`main\`, from ${GITHUB_SHA} ($(date -u +%Y-%m-%d)). For Apple Silicon
-          Macs with macOS 13 or later. Not for everyday use: it may be broken.
+          {
+            echo "The latest build of \`main\`, from ${GITHUB_SHA} ($(date -u +%Y-%m-%d)). For Apple Silicon"
+            echo "Macs with macOS 13 or later. Not for everyday use: it may be broken."
+            echo
+            cat <<'EOF'
+          The app isn't signed, so macOS blocks it at first. Before opening the disk image, remove
+          the quarantine from it:
 
-          The app isn't signed. Copy it to Applications, open it once, then choose **Open Anyway**
-          in System Settings → Privacy & Security.
+          ```sh
+          xattr -d com.apple.quarantine ~/Downloads/Gumka-*.dmg
+          ```
+
+          If Gumka is already installed, run:
+
+          ```sh
+          xattr -dr com.apple.quarantine /Applications/Gumka.app
+          ```
           EOF
+          } > notes.md
           gh release delete nightly --yes --cleanup-tag || true
           gh release create nightly dist/* --prerelease --latest=false \
             --title "Nightly" --notes-file notes.md --target "$GITHUB_SHA"
