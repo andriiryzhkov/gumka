@@ -1,0 +1,8 @@
+[alias]
+# `cargo xtask models` downloads the models in models.toml; see xtask/src/main.rs.
+xtask = "run --quiet --package xtask --"
+
+[env]
+# The oldest macOS Gumka runs on (Core ML's asynchronous compile needs 13). A value already in
+# the environment wins. The app bundle's Info.plist must say the same (LSMinimumSystemVersion).
+MACOSX_DEPLOYMENT_TARGET = "13.0"

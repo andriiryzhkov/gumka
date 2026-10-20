@@ -1,0 +1,17 @@
+[package]
+name = "gumka-core"
+description = "Gumka image pipeline: image I/O with metadata, crop/scale/blend for model-based tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+lcms2 = { version = "6.2.0", default-features = false, features = ["static"] }
+# The version image uses; read and written directly for every chunk (see png_io.rs).
+png = "0.18.1"
+tiff = "0.11.3"

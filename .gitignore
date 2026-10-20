@@ -1,0 +1,6 @@
+/target/
+# Downloaded and converted models; see docs/models.md for sources.
+/models/
+.DS_Store
+# Local agent instructions that override AGENTS.md; never committed.
+/AGENTS.local.md

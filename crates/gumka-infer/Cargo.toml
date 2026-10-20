@@ -1,0 +1,61 @@
+[package]
+name = "gumka-infer"
+description = "Model backends for Gumka: load a model and run it on an image and mask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+gumka-core = { path = "../gumka-core" }
+directories = "6"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = { version = "0.9.8", default-features = false, features = ["parse", "serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+# getuid, to check that the fallback model cache is the user's own.
+libc = "0.2.191"
+objc2 = "0.6.5"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDictionary",
+    "NSError",
+    "NSString",
+    "NSURL",
+    "NSValue",
+] }
+objc2-core-ml = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-video",
+    "MLDictionaryFeatureProvider",
+    "MLFeatureDescription",
+    "MLFeatureProvider",
+    "MLFeatureType",
+    "MLFeatureValue",
+    "MLImageConstraint",
+    "MLModel",
+    "MLModelConfiguration",
+    "MLModel_MLModelCompilation",
+    "MLModelDescription",
+    "MLMultiArray",
+    "MLMultiArrayConstraint",
+] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "bitflags",
+    "CVBase",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

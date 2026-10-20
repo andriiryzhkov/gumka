@@ -1,0 +1,11 @@
+<!-- Gumka logo. SPDX-License-Identifier: GPL-3.0-or-later. Wordmark outlines from IBM Plex Sans SemiBold (SIL OFL 1.1). -->
+<!-- One color, no background: uses currentColor (black when shown as an image). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="208 208 608 608" width="608" height="608" fill="currentColor">
+  <title>Gumka</title>
+  <path d="M689.7 362.9A232 232 0 1 0 744 512" fill="none" stroke="currentColor" stroke-width="112" stroke-linecap="round"/>
+  <path d="M600 456H744V568H600Z"/>
+  <path d="M551.5 456H588V568H551.5A31.5 31.5 0 0 1 520 536.5V487.5A31.5 31.5 0 0 1 551.5 456Z"/>
+  <rect x="470" y="598" width="30" height="22" rx="7" transform="rotate(-20 485 609)"/>
+  <rect x="508" y="632" width="22" height="16" rx="6" transform="rotate(16 519 640)"/>
+  <rect x="450" y="644" width="16" height="13" rx="5"/>
+</svg>

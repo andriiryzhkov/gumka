@@ -1,0 +1,103 @@
+# Gumka's model registry: every model the app can use, where its files come from and how to
+# check them.
+#
+# - `cargo xtask models` downloads the files for this platform into models/ and verifies each
+#   file's size and SHA-256. Weights never go in git.
+# - The app builds this file in: it is the list on the Models page and tells the app which
+#   packages to open.
+# - URLs are pinned to a revision, so a file can only change here, on purpose.
+# - Every model needs a license compatible with GPL-3.0-or-later that allows commercial use.
+#   docs/models.md has each model's provenance and inputs and outputs.
+
+[[models]]
+id = "lama"
+tool = "Erase"
+name = "LaMa (Big LaMa)"
+summary = "Best for most objects and large areas"
+format = "Core ML · 800 × 800"
+license = "Apache-2.0"
+source = "mlboydaisuke/LaMa-CoreML"
+source_url = "https://huggingface.co/mlboydaisuke/LaMa-CoreML"
+platform = "macos"
+# What the app opens, under models/.
+packages = ["LaMa.mlpackage"]
+# Each file is downloaded from base_url + path.
+base_url = "https://huggingface.co/mlboydaisuke/LaMa-CoreML/resolve/5ed76e3799ab4cad31381750d29880c267477e18/"
+
+[[models.files]]
+path = "LaMa.mlpackage/Manifest.json"
+size = 617
+sha256 = "c814fff3cedf827c044094545ef80b0280b6cb8dd0e5c0bcf69fd31921191e58"
+
+[[models.files]]
+path = "LaMa.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 1101809
+sha256 = "06a100ef99e0fd16326a3a8c4a687d13f7b26f544ea906a75338932d8554f953"
+
+[[models.files]]
+path = "LaMa.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 215544960
+sha256 = "d0541f6044a94cd4982bfdac074fc1ccfe11d8f1f590c299d6b5071b501fc184"
+
+[[models]]
+id = "sam2.1-small"
+tool = "Select object"
+name = "SAM 2.1 Small"
+summary = "Selects the object under a click"
+format = "Core ML · 1024 × 1024 · 3 parts"
+license = "Apache-2.0"
+source = "apple/coreml-sam2.1-small"
+source_url = "https://huggingface.co/apple/coreml-sam2.1-small"
+platform = "macos"
+# Image encoder, prompt encoder, mask decoder, in that order.
+packages = [
+    "SAM2_1SmallImageEncoderFLOAT16.mlpackage",
+    "SAM2_1SmallPromptEncoderFLOAT16.mlpackage",
+    "SAM2_1SmallMaskDecoderFLOAT16.mlpackage",
+]
+base_url = "https://huggingface.co/apple/coreml-sam2.1-small/resolve/883f5787eb0be35ce6965907a8bc1f5320a5a02e/"
+
+[[models.files]]
+path = "SAM2_1SmallImageEncoderFLOAT16.mlpackage/Manifest.json"
+size = 617
+sha256 = "442f9102d1a37c2699fce89b1f5257d35ebd0a7096f1773501cb0aba94fe95b6"
+
+[[models.files]]
+path = "SAM2_1SmallImageEncoderFLOAT16.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 203631
+sha256 = "736602a3130875072f843df123ce3ceff41ec2f917a867da56f7c2264d81a567"
+
+[[models.files]]
+path = "SAM2_1SmallImageEncoderFLOAT16.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 81268288
+sha256 = "6128a58f10cbcb7797bd12a7ec1e05ab4e9f8c80bd14ed05bbc43a9c9935a9c3"
+
+[[models.files]]
+path = "SAM2_1SmallPromptEncoderFLOAT16.mlpackage/Manifest.json"
+size = 617
+sha256 = "b368a8e831599464347890a79c054df143c163d9928e3e0a2ab6ef7c00a425d4"
+
+[[models.files]]
+path = "SAM2_1SmallPromptEncoderFLOAT16.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 20618
+sha256 = "3a83c167d8bd63e80f86349a78c2ab0527ce97eca1f848a4ce57fe5351241fa3"
+
+[[models.files]]
+path = "SAM2_1SmallPromptEncoderFLOAT16.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 2101056
+sha256 = "e29c6c65ef7754f8f6ed26155ca39ea703de3a7f576be5a7d3b8e29545059f31"
+
+[[models.files]]
+path = "SAM2_1SmallMaskDecoderFLOAT16.mlpackage/Manifest.json"
+size = 617
+sha256 = "d95d732931f590dbf6a08ea1fe58a6659ced8971c5b2a671d79091be1a63b9e1"
+
+[[models.files]]
+path = "SAM2_1SmallMaskDecoderFLOAT16.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 75167
+sha256 = "3536b71674dc706381f42833b55627fd3d1f2c1b68a365b49255284b4f7b55c7"
+
+[[models.files]]
+path = "SAM2_1SmallMaskDecoderFLOAT16.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 10222400
+sha256 = "dbc4910c434fee657ed9f001da7abcb467d2a37ac235099c6aa47628b122ec4e"

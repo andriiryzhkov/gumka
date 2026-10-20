@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/andriiryzhkov/gumka"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+# Hashing model files in debug builds of xtask would otherwise be slow.
+[profile.dev.package.sha2]
+opt-level = 3

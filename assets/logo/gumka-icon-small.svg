@@ -1,0 +1,10 @@
+<!-- Gumka logo. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- For 16 and 32 px: the same G (stroke 112) with its opening raised, a plain rubber tip, no crumbs or shadow. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="32" height="32">
+  <title>Gumka</title>
+  <defs><linearGradient id="gumka-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f9c26e"/><stop offset="1" stop-color="#e0891f"/></linearGradient></defs>
+  <path d="M627.36 100c103.83 0 155.75 0 195.41 20.21a185.4 185.4 0 0 1 81.02 81.02c20.21 39.66 20.21 91.58 20.21 195.41L924 627.36c0 103.83 0 155.75 -20.21 195.41a185.4 185.4 0 0 1 -81.02 81.02c-39.66 20.21 -91.58 20.21 -195.41 20.21L396.64 924c-103.83 0 -155.75 0 -195.41 -20.21a185.4 185.4 0 0 1 -81.02 -81.02c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41L100 396.64c0 -103.83 0 -155.75 20.21 -195.41a185.4 185.4 0 0 1 81.02 -81.02c39.66 -20.21 91.58 -20.21 195.41 -20.21Z" fill="url(#gumka-bg)"/>
+  <path d="M661.1 334.3A232 232 0 1 0 744 512" fill="none" stroke="#1f1c19" stroke-width="112" stroke-linecap="round"/>
+  <path d="M628 456.0H744V568.0H628Z" fill="#1f1c19"/>
+  <path d="M581.6 456.0H630V568.0H581.6A33.6 33.6 0 0 1 548 534.4V489.6A33.6 33.6 0 0 1 581.6 456.0Z" fill="#fbf3e6"/>
+</svg>

@@ -1,0 +1,50 @@
+[package]
+name = "gumka-app"
+description = "Gumka desktop app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "gumka"
+path = "src/main.rs"
+
+[dependencies]
+gumka-core = { path = "../gumka-core" }
+gumka-infer = { path = "../gumka-infer" }
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "default_fonts", "links", "wgpu", "wayland", "x11"] }
+egui_extras = { version = "0.37.0", default-features = false, features = ["svg"] }
+resvg = { version = "0.45.1", default-features = false }
+rfd = "0.17.2"
+
+# Tagging the window's Metal layer with its color space (see display.rs), and asking about
+# unsaved changes on Quit (see quit.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSResponder",
+    "NSWindow",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGColorSpace"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDictionary",
+    "NSKeyValueObserving",
+    "NSObject",
+    "NSString",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-graphics",
+    "CALayer",
+    "CAMetalLayer",
+] }
+raw-window-handle = "0.6.2"

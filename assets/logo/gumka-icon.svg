@@ -1,0 +1,30 @@
+<!-- Gumka logo. SPDX-License-Identifier: GPL-3.0-or-later. Wordmark outlines from IBM Plex Sans SemiBold (SIL OFL 1.1). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Gumka</title>
+  <defs>
+    <linearGradient id="gumka-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f9c26e"/>
+      <stop offset="1" stop-color="#e0891f"/>
+    </linearGradient>
+    <radialGradient id="gumka-glow" cx="0.3" cy="0.16" r="0.8">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gumka-rubber" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fffaf2"/>
+      <stop offset="1" stop-color="#e8dcca"/>
+    </linearGradient>
+    <filter id="gumka-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <path d="M627.36 100c103.83 0 155.75 0 195.41 20.21a185.4 185.4 0 0 1 81.02 81.02c20.21 39.66 20.21 91.58 20.21 195.41L924 627.36c0 103.83 0 155.75 -20.21 195.41a185.4 185.4 0 0 1 -81.02 81.02c-39.66 20.21 -91.58 20.21 -195.41 20.21L396.64 924c-103.83 0 -155.75 0 -195.41 -20.21a185.4 185.4 0 0 1 -81.02 -81.02c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41L100 396.64c0 -103.83 0 -155.75 20.21 -195.41a185.4 185.4 0 0 1 81.02 -81.02c39.66 -20.21 91.58 -20.21 195.41 -20.21Z" fill="url(#gumka-bg)" filter="url(#gumka-shadow)"/>
+  <path d="M627.36 100c103.83 0 155.75 0 195.41 20.21a185.4 185.4 0 0 1 81.02 81.02c20.21 39.66 20.21 91.58 20.21 195.41L924 627.36c0 103.83 0 155.75 -20.21 195.41a185.4 185.4 0 0 1 -81.02 81.02c-39.66 20.21 -91.58 20.21 -195.41 20.21L396.64 924c-103.83 0 -155.75 0 -195.41 -20.21a185.4 185.4 0 0 1 -81.02 -81.02c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41L100 396.64c0 -103.83 0 -155.75 20.21 -195.41a185.4 185.4 0 0 1 81.02 -81.02c39.66 -20.21 91.58 -20.21 195.41 -20.21Z" fill="url(#gumka-glow)"/>
+  <path d="M689.7 362.9A232 232 0 1 0 744 512" fill="none" stroke="#1f1c19" stroke-width="112" stroke-linecap="round"/>
+  <path d="M600 456H744V568H600Z" fill="#1f1c19"/>
+  <path d="M551.5 456H604V568H551.5A31.5 31.5 0 0 1 520 536.5V487.5A31.5 31.5 0 0 1 551.5 456Z" fill="url(#gumka-rubber)"/>
+  <path d="M598 456H606V568H598Z" fill="#000000" fill-opacity="0.16"/>
+  <rect x="470" y="598" width="30" height="22" rx="7" fill="#f6ecdd" transform="rotate(-20 485 609)"/>
+  <rect x="508" y="632" width="22" height="16" rx="6" fill="#f6ecdd" transform="rotate(16 519 640)"/>
+  <rect x="450" y="644" width="16" height="13" rx="5" fill="#f6ecdd"/>
+</svg>
