@@ -1,0 +1,66 @@
+# On every push to main: CI, then the macOS app, published as the rolling "nightly"
+# pre-release (replaced on each run) and kept as a workflow artifact for two weeks.
+name: Nightly
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Only the newest push to main is built.
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  bundle:
+    name: Build Gumka.app
+    needs: test
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore the models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('models.toml') }}
+      - name: Download and check the models
+        run: cargo xtask models
+      - name: Build the app and disk image
+        run: cargo xtask bundle
+      - name: Collect the disk image
+        run: |
+          mkdir dist
+          mv target/bundle/Gumka-*-arm64.dmg dist/Gumka-nightly-arm64.dmg
+          cd dist && shasum -a 256 -- *.dmg > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gumka-nightly-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+      - name: Replace the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<EOF
+          The latest build of \`main\`, from ${GITHUB_SHA} ($(date -u +%Y-%m-%d)). For Apple Silicon
+          Macs with macOS 13 or later. Not for everyday use: it may be broken.
+
+          The app isn't signed. Copy it to Applications, open it once, then choose **Open Anyway**
+          in System Settings → Privacy & Security.
+          EOF
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/* --prerelease --latest=false \
+            --title "Nightly" --notes-file notes.md --target "$GITHUB_SHA"

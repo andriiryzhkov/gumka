@@ -1,0 +1,73 @@
+# On a tag release-<version> (e.g. release-0.2.0): CI, then the universal macOS app, published
+# as a GitHub release with generated notes. The tag's version must match Cargo.toml's; a
+# version with a hyphen (0.2.0-beta.1) is published as a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ['release-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Release ${{ github.ref_name }}
+    needs: test
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - name: Check the version
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#release-}"
+          cargo_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "gumka-app") | .version')
+          if [ "$version" != "$cargo_version" ]; then
+            echo "::error::The tag says $version, but Cargo.toml says $cargo_version. Set the version in Cargo.toml, commit, and tag that commit release-$cargo_version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore the models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-${{ hashFiles('models.toml') }}
+      - name: Download and check the models
+        run: cargo xtask models
+      - name: Build the app and disk image
+        run: cargo xtask bundle --universal
+      - name: Collect the disk image
+        run: |
+          mkdir dist
+          mv target/bundle/Gumka-*-universal.dmg dist/
+          cd dist && shasum -a 256 -- *.dmg > SHA256SUMS.txt
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          prerelease=()
+          case "$VERSION" in *-*) prerelease=(--prerelease --latest=false) ;; esac
+          cat > notes.md <<'EOF'
+          For Macs with macOS 13 or later (Apple Silicon and Intel).
+
+          The app isn't signed. Copy it to Applications, open it once, then choose **Open Anyway**
+          in System Settings → Privacy & Security.
+          EOF
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag "${prerelease[@]}" \
+            --title "Gumka $VERSION" --generate-notes --notes "$(cat notes.md)"

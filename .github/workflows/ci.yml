@@ -1,9 +1,19 @@
+# Format, lint and tests on macOS, Windows and Linux: on every pull request, and before the
+# nightly build and a release (both call this workflow).
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request replaces the run for the previous one.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always

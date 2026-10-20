@@ -59,7 +59,8 @@ cargo run --release -p gumka-infer --example coreml_spike -- models/LaMa.mlpacka
 ## Checks
 
 Run all of these before a change is done. CI runs the first three on macOS, Windows and Linux
-with `RUSTFLAGS=-D warnings` (`.github/workflows/ci.yml`).
+with `RUSTFLAGS=-D warnings` on every pull request, and before every nightly build and release
+(`.github/workflows`; see [packaging.md](packaging.md#ci-and-releases)).
 
 ```sh
 cargo fmt --all --check

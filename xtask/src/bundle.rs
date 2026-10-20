@@ -562,13 +562,22 @@ fn make_dmg(app: &Path, out: &Path, image: &Path) -> Result<(), String> {
     run_command(Command::new("cp").arg("-cR").arg(app).arg(&staging))?;
     std::os::unix::fs::symlink("/Applications", staging.join("Applications"))
         .map_err(|e| format!("{}: {e}", staging.display()))?;
-    let result = run_command(
-        Command::new("hdiutil")
-            .args(["create", "-quiet", "-volname", NAME, "-fs", "HFS+"])
-            .args(["-format", "UDZO", "-ov", "-srcfolder"])
-            .arg(&staging)
-            .arg(image),
-    );
+    // hdiutil now and then fails with "Resource busy" (often on CI runners); a retry works.
+    let mut result = Ok(());
+    for attempt in 1..=3 {
+        result = run_command(
+            Command::new("hdiutil")
+                .args(["create", "-quiet", "-volname", NAME, "-fs", "HFS+"])
+                .args(["-format", "UDZO", "-ov", "-srcfolder"])
+                .arg(&staging)
+                .arg(image),
+        );
+        if result.is_ok() || attempt == 3 {
+            break;
+        }
+        println!("  hdiutil failed; trying again");
+        std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
+    }
     let _ = fs::remove_dir_all(&staging);
     result
 }

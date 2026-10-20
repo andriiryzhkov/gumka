@@ -15,8 +15,9 @@ its contents into tracked files.
 Gumka is an extensible AI photo-retouching app: a native Rust + egui desktop app that erases
 objects with LaMa and selects them with SAM 2.1, on-device through Core ML, working on 16-bit,
 wide-gamut TIFF / PNG / JPEG files without losing their metadata. It runs standalone and as the
-external editor of RAW editors (any that send a file and pick it up when it is saved in place). macOS 13+ on Apple Silicon is the working platform;
-Windows and Linux must keep building but have no model backend yet. License: GPL-3.0-or-later.
+external editor of RAW editors (any that send a file and pick it up when it is saved in place).
+macOS 13+ on Apple Silicon is the working platform; Windows and Linux must keep building but have
+no model backend yet. License: GPL-3.0-or-later.
 Current status and scope: [docs/overview.md](docs/overview.md).
 
 ## Repository map
@@ -30,6 +31,7 @@ Current status and scope: [docs/overview.md](docs/overview.md).
 | `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
 | `models/` | Downloaded models (git-ignored). |
+| `.github/workflows` | CI on pull requests, the nightly build on pushes to `main`, releases on `release-*` tags. |
 | `assets/logo` | The logo SVGs. |
 | `docs/` | Developer documentation. `README.md` at the root is for users. |
 
@@ -55,7 +57,7 @@ and Windows from a Mac needs a dummy Little CMS library; see
 
 1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
    `cargo test --workspace` all pass. CI runs them on macOS, Windows and Linux with warnings as
-   errors.
+   errors, on every pull request and before every nightly build and release.
 2. Code that is cfg-gated or touches platform code also passes clippy for
    `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`.
 3. New behavior has tests, and a fixed bug has a test that fails without the fix.
@@ -124,7 +126,8 @@ and Windows from a Mac needs a dummy Little CMS library; see
 
 ## Working agreements
 
-- Don't commit, push, tag or create branches unless asked.
+- Don't commit, push, tag or create branches unless asked. Pushing to `main` publishes a nightly
+  build, and pushing a `release-*` tag publishes a release.
 - Don't download models or add dependencies without a reason; pin versions, and prefer crates
   already in `Cargo.lock`.
 - Never send personal data (names, email addresses, files) to external services.
