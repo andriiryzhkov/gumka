@@ -41,8 +41,12 @@
     converts through a table, can't be told ([color.md](color.md#the-models-color-space)). A
     linear profile that P3 holds (linear sRGB) gets none.
   - **Model:** RealPLKSR at that scale, loaded the first time it is used.
-  - **The action**, "Upscale 2×". While it runs: "Upscaling 2×… 37%", with a neutral Cancel
-    button. Cancel keeps the photo as it was.
+  - **The action**, "Upscale 2×". While it runs, the same button, in the same place and size,
+    says "Upscaling 2×… 37%" with a spinner, dimmed; under the pointer it lights up as "Stop
+    upscaling · Esc", and a click (or Esc) stops it, keeping the photo as it was. The worker
+    stops after the tile it is on, which takes up to about 10 s at 2× on a CPU, so the button
+    says "Stopping…" at once (and the status bar "Stopping upscale…") and takes no more clicks
+    until then. No Cancel button appears, so nothing in the inspector moves.
   - The status bar shows the progress from any tool.
 - Neutral dark grays and a mid-gray viewer. One amber accent (#F2A541), only for the primary
   action (the inspector's, and Save & Return in the toolbar for a sent photo) and the active

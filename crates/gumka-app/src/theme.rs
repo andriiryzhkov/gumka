@@ -12,6 +12,10 @@ use eframe::egui::{
 };
 
 pub const ACCENT: Color32 = Color32::from_rgb(0xf2, 0xa5, 0x41);
+/// The accent under the pointer.
+pub const ACCENT_HOVER: Color32 = Color32::from_rgb(0xff, 0xb5, 0x55);
+/// The accent of an action that can't run now, or is running.
+pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x6b, 0x55, 0x36);
 /// Text on the accent color.
 pub const ON_ACCENT: Color32 = Color32::from_rgb(0x1a, 0x1a, 0x1a);
 

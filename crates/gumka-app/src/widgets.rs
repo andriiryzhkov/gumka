@@ -375,19 +375,48 @@ pub fn primary_button(
     enabled: bool,
     busy: bool,
 ) -> Response {
-    let size = vec2(ui.available_width(), 38.0);
     let sense = if enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let (rect, response) = action_rect(ui, sense);
     response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
     let fill = match (enabled, response.hovered()) {
-        (false, _) => Color32::from_rgb(0x6b, 0x55, 0x36),
-        (true, true) => Color32::from_rgb(0xff, 0xb5, 0x55),
+        (false, _) => ACCENT_DIM,
+        (true, true) => ACCENT_HOVER,
         (true, false) => ACCENT,
     };
+    paint_action(ui, rect, fill, text, shortcut, busy);
+    response
+}
+
+/// The tool's main action while it runs, in the same place: `text` with a spinner, dimmed;
+/// under the pointer it lights up as `stop` with its shortcut, for a click stops the run.
+pub fn running_button(ui: &mut Ui, text: &str, stop: &str, shortcut: &str) -> Response {
+    let (rect, response) = action_rect(ui, Sense::click());
+    let hovered = response.hovered();
+    let label = if hovered { stop } else { text };
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, true, label));
+    let fill = if hovered { ACCENT } else { ACCENT_DIM };
+    let shortcut = if hovered { shortcut } else { "" };
+    paint_action(ui, rect, fill, label, shortcut, !hovered);
+    response
+}
+
+/// The id of the tool's main action, the same whatever its state.
+pub fn action_id() -> egui::Id {
+    egui::Id::unique("tool-action")
+}
+
+/// The tool's main action's place: the full width, 38 px high.
+fn action_rect(ui: &mut Ui, sense: Sense) -> (Rect, Response) {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), 38.0));
+    (rect, ui.interact(rect, action_id(), sense))
+}
+
+/// The action's face: `text` and its `shortcut` centered, after a spinner when `busy`.
+fn paint_action(ui: &Ui, rect: Rect, fill: Color32, text: &str, shortcut: &str, busy: bool) {
     let painter = ui.painter();
     painter.rect_filled(rect, 7.0, fill);
     let galley = painter.layout_no_wrap(text.to_owned(), FontId::new(13.5, semibold()), ON_ACCENT);
@@ -414,7 +443,6 @@ pub fn primary_button(
         key,
         ON_ACCENT,
     );
-    response
 }
 
 /// A plain button sized to the row height.
@@ -432,8 +460,8 @@ pub fn accent_button(ui: &mut Ui, text: &str, enabled: bool) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, sense);
     response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
     let fill = match (enabled, response.hovered()) {
-        (false, _) => Color32::from_rgb(0x6b, 0x55, 0x36),
-        (true, true) => Color32::from_rgb(0xff, 0xb5, 0x55),
+        (false, _) => ACCENT_DIM,
+        (true, true) => ACCENT_HOVER,
         (true, false) => ACCENT,
     };
     let painter = ui.painter();

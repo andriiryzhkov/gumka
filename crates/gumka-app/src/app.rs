@@ -1283,14 +1283,18 @@ impl GumkaApp {
     }
 
     fn upscale_action(&mut self, ui: &mut Ui, info: &ToolInfo) {
+        // While it runs, the button itself stops it, so nothing appears or moves. The worker
+        // stops after the tile it is on (seconds on a CPU), so a stop shows at once.
         if let Some(run) = &self.upscaling {
+            if run.cancel.load(Ordering::Relaxed) {
+                widgets::primary_button(ui, "Stopping…", "", false, true)
+                    .on_hover_text("Stops after the part it is on; the photo stays as it was");
+                return;
+            }
             let percent = (run.done * 100).checked_div(run.total).unwrap_or(0);
             let label = format!("Upscaling {}… {percent}%", run.factor);
-            widgets::primary_button(ui, &label, "", false, true);
-            ui.add_space(8.0);
-            let width = ui.available_width();
-            if widgets::button(ui, "Cancel", true, Some(width))
-                .on_hover_text("Stop and keep the photo as it was (Esc)")
+            if widgets::running_button(ui, &label, "Stop upscaling", "Esc")
+                .on_hover_text("The photo stays as it was")
                 .clicked()
             {
                 self.cancel_upscale();
@@ -1716,7 +1720,11 @@ impl GumkaApp {
                 }
                 if let Some(run) = &self.upscaling {
                     let percent = (run.done * 100).checked_div(run.total).unwrap_or(0);
-                    ui.label(small(format!("Upscaling {percent}%")));
+                    if run.cancel.load(Ordering::Relaxed) {
+                        ui.label(small("Stopping upscale…".into()));
+                    } else {
+                        ui.label(small(format!("Upscaling {percent}%")));
+                    }
                 } else if let Some((what, seconds)) = self.last_run {
                     ui.label(small(format!("Last {what} {seconds:.1} s")));
                 }
@@ -4052,6 +4060,59 @@ mod tests {
         assert_eq!(h.doc().size(), (80, 60));
         assert!(h.app.save());
         assert_eq!(Picture::open(&a).unwrap().pixels.dimensions(), (80, 60));
+    }
+
+    /// Where the tool's main action is, once the inspector's panels have settled (they size
+    /// themselves from the frames before).
+    fn action_place(h: &mut Harness) -> Option<egui::Rect> {
+        for _ in 0..3 {
+            h.frame(vec![]);
+        }
+        h.ctx.read_response(widgets::action_id()).map(|r| r.rect)
+    }
+
+    /// While an upscale runs, its button keeps its place and size, and a click on it stops the
+    /// upscale: no Cancel button appears and pushes the inspector around.
+    #[test]
+    fn the_upscale_button_stops_the_upscale_in_place() {
+        let mut h = Harness::new("upscale-stop");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        h.app.tool = Tool::Upscale;
+        let idle = action_place(&mut h).expect("the action is shown");
+        let (pixels, _, cancel) = start_upscale(&mut h, Factor::X2);
+        h.fake.reply(Reply::Progress { done: 1, total: 4 });
+        assert_eq!(
+            action_place(&mut h),
+            Some(idle),
+            "the same place while it runs"
+        );
+        let at = idle.center();
+        h.frame(vec![Event::PointerMoved(at)]);
+        let clickable = |h: &Harness| {
+            let action = h.ctx.read_response(widgets::action_id());
+            action.is_some_and(|r| r.sense.senses_click())
+        };
+        assert!(clickable(&h), "while it runs, the button stops it");
+        h.frame(vec![press(at.x, at.y, true)]);
+        h.frame(vec![press(at.x, at.y, false)]);
+        assert!(
+            cancel.load(Ordering::Relaxed),
+            "a click on it stops the upscale"
+        );
+        // The worker finishes the tile it is on first: until then the button says it is
+        // stopping, in the same place, and takes no more clicks.
+        assert_eq!(action_place(&mut h), Some(idle));
+        assert!(!clickable(&h), "stopping");
+        h.fake.reply(Reply::Upscaled {
+            pixels,
+            result: Ok(None),
+        });
+        assert_eq!(action_place(&mut h), Some(idle), "and after it");
+        assert!(h.app.upscaling.is_none());
+        assert_eq!(h.doc().size(), (40, 30));
+        assert!(!h.doc().can_undo(), "the photo is as it was");
     }
 
     #[test]
