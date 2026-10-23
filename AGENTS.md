@@ -14,10 +14,11 @@ its contents into tracked files.
 
 Gumka is an extensible AI photo-retouching app: a native Rust + egui desktop app that erases
 objects with LaMa, selects them with SAM 2.1 and upscales with RealPLKSR, on-device through Core
-ML, working on 16-bit, wide-gamut TIFF / PNG / JPEG files without losing their metadata. It runs
-standalone and as the external editor of RAW editors (any that send a file and pick it up when it
-is saved in place). macOS 13+ on Apple Silicon is the working platform; Windows and Linux must
-keep building but have no model backend yet. License: GPL-3.0-or-later.
+ML on macOS and ONNX Runtime on Linux, working on 16-bit, wide-gamut TIFF / PNG / JPEG files
+without losing their metadata. It runs standalone and as the external editor of RAW editors (any
+that send a file and pick it up when it is saved in place). macOS 13+ on Apple Silicon is the
+main platform; Linux runs every tool from source on the system's ONNX Runtime (CPU); Windows must
+keep building but has no model backend yet. License: GPL-3.0-or-later.
 Current status and scope: [docs/overview.md](docs/overview.md).
 
 ## Repository map
@@ -25,10 +26,10 @@ Current status and scope: [docs/overview.md](docs/overview.md).
 | Path | What it is |
 |---|---|
 | `crates/gumka-core` | Pictures, TIFF/PNG/JPEG I/O and metadata, color, erase, select and upscale pipelines. No UI, no ML. |
-| `crates/gumka-infer` | Model registry and the Core ML backend (LaMa, SAM, RealPLKSR). |
+| `crates/gumka-infer` | Model registry and the backends: Core ML (macOS), ONNX Runtime (Linux) for LaMa, SAM, RealPLKSR. |
 | `crates/gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
 | `crates/gumka-app` | The egui app (binary `gumka`). |
-| `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app). |
+| `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app, or the Linux AppImage). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
 | `rust-toolchain.toml` | The pinned Rust version, used locally and in CI. |
 | `models/` | Downloaded models (git-ignored). |
@@ -45,7 +46,7 @@ Module-level detail: [docs/architecture.md](docs/architecture.md).
 cargo xtask models                                   # once: download the models (~340 MB)
 cargo run --release -p gumka-app [-- IMAGE]          # the app
 cargo run --release -p gumka-cli -- erase IN MASK OUT
-cargo xtask bundle                                   # target/bundle/Gumka.app and a .dmg (unsigned)
+cargo xtask bundle                                   # target/bundle: Gumka.app and a .dmg (unsigned), or the AppImage
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -116,8 +117,8 @@ and Windows from a Mac needs a dummy Little CMS library; see
 - Unit tests live next to the code. Format round trips are in
   `crates/gumka-core/src/round_trips.rs`; app behavior is tested headless in `app.rs`'s tests
   with a fake worker; file panels go through the `panels` seam and must never open in a test.
-- Tests must run without the downloaded models and without Core ML. A test that needs them is
-  `#[ignore]`d. Use stand-ins (fake inpainters, segmenters, compile and load closures).
+- Tests must run without the downloaded models, Core ML and ONNX Runtime. A test that needs
+  them is `#[ignore]`d. Use stand-ins (fake inpainters, segmenters, compile and load closures).
 - Make test files (generated pictures, lcms2-built or macOS system profiles, hand-built bytes).
   Never use the user's personal photos.
 - Driving the real app is sometimes needed: see

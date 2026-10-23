@@ -2,7 +2,7 @@
 
 //! Model backends for Gumka.
 //!
-//! Only the Core ML backend (macOS) exists so far. Models plug into the pipeline through
+//! Core ML runs the models on macOS, ONNX Runtime on Linux. Models plug into the pipeline through
 //! [`gumka_core::erase::Inpainter`] (LaMa), [`gumka_core::select::Segmenter`] (SAM) and
 //! [`gumka_core::upscale::Upscaler`] (RealPLKSR).
 
@@ -11,6 +11,8 @@ pub mod coreml;
 #[cfg(target_os = "macos")]
 mod lama;
 pub mod models;
+#[cfg(target_os = "linux")]
+pub mod onnx;
 #[cfg(target_os = "macos")]
 mod sam;
 #[cfg(target_os = "macos")]

@@ -25,6 +25,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Gumka")
+            // Linux desktops match the window to the installed `.desktop` file by this id, for
+            // its icon and name; the AppImage's is named after it.
+            .with_app_id("io.github.andriiryzhkov.gumka")
             .with_inner_size([1280.0, 860.0])
             .with_min_inner_size([560.0, 360.0])
             .with_drag_and_drop(true)

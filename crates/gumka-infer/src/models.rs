@@ -5,7 +5,8 @@
 //! The registry is `models.toml` at the repository root, built in here. `cargo xtask models`
 //! downloads what it lists into the repository's `models/`. Packages are looked up in:
 //! 1. the directory in `$GUMKA_MODELS`,
-//! 2. the app bundle's `Contents/Resources/models`, when running from one,
+//! 2. the package's models, when running from one: the app bundle's `Contents/Resources/models`
+//!    on macOS, `usr/share/gumka/models` in the AppImage on Linux,
 //! 3. `models/` in the current directory,
 //! 4. the repository's `models/` (for builds run from a checkout),
 //! 5. the per-user data directory, e.g. `~/Library/Application Support/Gumka/models` on macOS.
@@ -13,9 +14,13 @@
 //! A directory holds a model only if it has every file the registry lists, each of the listed
 //! size (an interrupted download is skipped, and said why). `$GUMKA_MODELS` is the override:
 //! there the files must exist, but may differ in size (a model converted differently), with a
-//! warning. Checking the SHA-256 sums is left to `cargo xtask models --check`. The app bundle
-//! holds the packages compiled (`LaMa.mlmodelc` for `LaMa.mlpackage`; see [`compiled_name`]),
-//! made by `cargo xtask bundle` from checked downloads.
+//! warning. Checking the SHA-256 sums is left to `cargo xtask models --check`. The macOS app
+//! bundle holds the packages compiled (`LaMa.mlmodelc` for `LaMa.mlpackage`; see
+//! [`compiled_name`]), made by `cargo xtask bundle` from checked downloads; the AppImage holds
+//! them as downloaded.
+//!
+//! An id can have an entry per platform (Core ML on macOS, ONNX on Linux); [`model`] gives this
+//! platform's. A model with a `dir` keeps its files in that folder of a models directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -65,9 +70,12 @@ pub struct ModelInfo {
     pub copyright: Vec<String>,
     pub source: String,
     pub source_url: String,
-    /// The platform it runs on (`"macos"` for Core ML).
+    /// The platform it runs on (`"macos"` for Core ML, `"linux"` for ONNX).
     pub platform: String,
-    /// What the app opens, relative to a models directory.
+    /// The folder of a models directory its files are in, if not the directory itself.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// What the app opens, relative to [`Self::root_in`].
     pub packages: Vec<String>,
     /// Each file is downloaded from `base_url` + its path.
     pub base_url: String,
@@ -87,6 +95,14 @@ impl ModelInfo {
         self.platform == std::env::consts::OS
     }
 
+    /// Where this model's files are in the models directory `dir`.
+    pub fn root_in(&self, dir: &Path) -> PathBuf {
+        match &self.dir {
+            Some(folder) => dir.join(folder),
+            None => dir.to_path_buf(),
+        }
+    }
+
     /// Total download size.
     pub fn size(&self) -> u64 {
         self.files.iter().map(|f| f.size).sum()
@@ -96,11 +112,9 @@ impl ModelInfo {
     /// explanation of what is missing and how to get it.
     pub fn find_packages(&self) -> Result<Vec<PathBuf>, NotFound> {
         let overriding = std::env::var_os("GUMKA_MODELS").map(PathBuf::from);
-        self.find_packages_in(
-            &search_dirs(),
-            overriding.as_deref(),
-            bundle_dir().as_deref(),
-        )
+        // Only Core ML's packages are compiled for the bundle.
+        let compiled = bundle_dir().filter(|_| cfg!(target_os = "macos"));
+        self.find_packages_in(&search_dirs(), overriding.as_deref(), compiled.as_deref())
     }
 
     /// [`Self::find_packages`] in `dirs`, of which `overriding` (if among them) only needs the
@@ -141,7 +155,8 @@ impl ModelInfo {
                 _ => false,
             };
             if found {
-                return Ok(self.packages.iter().map(|p| dir.join(p)).collect());
+                let root = self.root_in(dir);
+                return Ok(self.packages.iter().map(|p| root.join(p)).collect());
             }
             if let Err(incomplete) = check
                 && let Some(why) = incomplete.explain()
@@ -204,8 +219,9 @@ impl ModelInfo {
     /// Whether `dir` has every file of this model, each the registry's size.
     fn check_files(&self, dir: &Path) -> Result<(), Incomplete<'_>> {
         let (mut missing, mut sizes) = (Vec::new(), Vec::new());
+        let root = self.root_in(dir);
         for file in &self.files {
-            match std::fs::metadata(dir.join(&file.path)) {
+            match std::fs::metadata(root.join(&file.path)) {
                 Ok(meta) if meta.len() == file.size => {}
                 Ok(meta) => sizes.push(OtherSize {
                     path: &file.path,
@@ -232,16 +248,26 @@ pub fn compiled_name(package: &str) -> String {
     format!("{}.mlmodelc", stem.to_string_lossy())
 }
 
-/// The models folder of the app bundle this program runs from (`<app>/Contents/MacOS/<exe>`
-/// next to `<app>/Contents/Resources/models`), if it is one.
+/// The models folder of the package this program runs from, if it is one.
 pub fn bundle_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let contents = exe
-        .parent()
-        .filter(|d| d.ends_with("Contents/MacOS"))?
-        .parent()?;
-    let dir = contents.join("Resources/models");
+    let dir = package_models(&std::env::current_exe().ok()?)?;
     dir.is_dir().then_some(dir)
+}
+
+/// Where a package puts its models, for the executable `exe`: an app bundle's
+/// `Contents/Resources/models` next to its `Contents/MacOS/<exe>` on macOS, else
+/// `<prefix>/share/gumka/models` for `<prefix>/bin/<exe>` (the AppImage's `usr/`).
+fn package_models(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if cfg!(target_os = "macos") {
+        let contents = Some(bin)
+            .filter(|d| d.ends_with("Contents/MacOS"))?
+            .parent()?;
+        Some(contents.join("Resources/models"))
+    } else {
+        let prefix = Some(bin).filter(|d| d.ends_with("bin"))?.parent()?;
+        Some(prefix.join("share/gumka/models"))
+    }
 }
 
 /// A model that isn't in any models folder, complete.
@@ -319,12 +345,17 @@ pub fn registry() -> &'static [ModelInfo] {
     })
 }
 
-/// A model by registry id.
+/// This platform's model of registry id `id`.
 pub fn model(id: &str) -> Result<&'static ModelInfo, String> {
     registry()
         .iter()
-        .find(|m| m.id == id)
-        .ok_or_else(|| format!("model {id:?} is not in models.toml"))
+        .find(|m| m.id == id && m.for_this_platform())
+        .ok_or_else(|| {
+            format!(
+                "models.toml has no model {id:?} for {}",
+                std::env::consts::OS
+            )
+        })
 }
 
 /// The repository's `models/` directory, where `cargo xtask models` puts files.
@@ -378,8 +409,19 @@ mod tests {
     #[test]
     fn registry_is_valid() {
         let models = registry();
-        assert!(model(LAMA).is_ok() && model(SAM).is_ok());
-        assert!(model(UPSCALE_2X).is_ok() && model(UPSCALE_4X).is_ok());
+        // Every model the app uses, on each platform with a backend.
+        for platform in ["macos", "linux"] {
+            for id in [LAMA, SAM, UPSCALE_2X, UPSCALE_4X] {
+                assert!(
+                    models.iter().any(|m| m.id == id && m.platform == platform),
+                    "{id} on {platform}"
+                );
+            }
+        }
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            let lama = model(LAMA).unwrap();
+            assert_eq!(lama.platform, std::env::consts::OS, "this platform's entry");
+        }
         for m in models {
             if m.license == "MIT" || m.license.starts_with("BSD") {
                 assert!(
@@ -403,19 +445,35 @@ mod tests {
                     m.id,
                     f.path
                 );
+                // Inside a package, a package itself, or an ONNX package's external weights.
                 assert!(
                     m.packages
                         .iter()
-                        .any(|p| f.path.starts_with(&format!("{p}/")) || f.path == *p),
+                        .any(|p| f.path.starts_with(&format!("{p}/"))
+                            || f.path == *p
+                            || f.path == format!("{p}_data")),
                     "{} lies outside the model's packages",
                     f.path
                 );
             }
         }
-        let mut ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        let mut ids: Vec<(&str, &str)> = models
+            .iter()
+            .map(|m| (m.id.as_str(), m.platform.as_str()))
+            .collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), models.len(), "duplicate ids");
+        assert_eq!(ids.len(), models.len(), "an id twice for one platform");
+        // The app names a model by its id wherever it runs.
+        for m in models {
+            assert!(
+                models
+                    .iter()
+                    .all(|other| other.id != m.id || other.name == m.name),
+                "{} has more than one name",
+                m.id
+            );
+        }
     }
 
     /// A small model: one package of two files.
@@ -436,6 +494,7 @@ mod tests {
             source: String::new(),
             source_url: String::new(),
             platform: std::env::consts::OS.into(),
+            dir: None,
             packages: vec!["Tiny.mlpackage".into()],
             base_url: "https://example.invalid/".into(),
             files: vec![
@@ -515,6 +574,51 @@ mod tests {
         );
         assert!(error.message.contains("is not downloaded"), "{error}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A model with a folder of its own is looked for in that folder of each directory.
+    #[test]
+    fn a_model_with_a_dir_is_found_inside_it() {
+        let root = std::env::temp_dir().join(format!("gumka-dir-{}", std::process::id()));
+        let (outside, inside) = (root.join("outside"), root.join("inside"));
+        put(&outside, true, Some(2_000_000));
+        put(&inside.join("Tiny-ONNX"), true, Some(2_000_000));
+        let model = ModelInfo {
+            dir: Some("Tiny-ONNX".into()),
+            ..tiny()
+        };
+        let found = model
+            .find_packages_in(&[outside.clone(), inside.clone()], None, None)
+            .unwrap();
+        assert_eq!(found, [inside.join("Tiny-ONNX/Tiny.mlpackage")]);
+        assert!(
+            model.find_packages_in(&[outside], None, None).is_err(),
+            "files outside the folder don't count"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A package's models are next to its executable, as each platform's package lays them out;
+    /// a build in `target/` has none.
+    #[test]
+    fn a_package_keeps_its_models_by_its_executable() {
+        let (exe, models) = if cfg!(target_os = "macos") {
+            (
+                "/Applications/Gumka.app/Contents/MacOS/Gumka",
+                "/Applications/Gumka.app/Contents/Resources/models",
+            )
+        } else {
+            (
+                "/tmp/.mount_Gumka/usr/bin/gumka",
+                "/tmp/.mount_Gumka/usr/share/gumka/models",
+            )
+        };
+        assert_eq!(package_models(Path::new(exe)), Some(PathBuf::from(models)));
+        assert_eq!(
+            package_models(Path::new("/src/gumka/target/release/gumka")),
+            None
+        );
+        assert_eq!(package_models(Path::new("gumka")), None);
     }
 
     /// An app bundle holds the packages compiled; one that lacks some is passed over and said

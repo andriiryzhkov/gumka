@@ -161,3 +161,100 @@ sha256 = "922cb5784713bb01a1f1fc80e0f8a0e210ca506aae6df88f5931c0e769540f45"
 path = "RealPLKSR-4x.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
 size = 14812832
 sha256 = "da081b4a3aad61e6533f6a900155b3b583bb0433c8f8a0e719c3c649dee4a4ec"
+
+# ONNX versions for ONNX Runtime (Linux). Same ids as the Core ML models, so the app treats
+# them alike; `dir` keeps each model's files in a folder of its own under models/.
+[[models]]
+id = "lama"
+tool = "Erase"
+name = "LaMa (Big LaMa)"
+summary = "Best for most objects and large areas"
+format = "ONNX · 512 × 512"
+license = "Apache-2.0"
+source = "Carve/LaMa-ONNX"
+source_url = "https://huggingface.co/Carve/LaMa-ONNX"
+platform = "linux"
+dir = "LaMa-ONNX"
+packages = ["lama_fp32.onnx"]
+base_url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/"
+
+[[models.files]]
+path = "lama_fp32.onnx"
+size = 208044816
+sha256 = "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6"
+
+[[models]]
+id = "sam2.1-small"
+tool = "Select object"
+name = "SAM 2.1 Small"
+summary = "Selects the object under a click"
+format = "ONNX · 1024 × 1024 · 2 parts"
+license = "Apache-2.0"
+source = "onnx-community/sam2.1-hiera-small-ONNX"
+source_url = "https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX"
+platform = "linux"
+dir = "SAM2.1-Small-ONNX"
+# Image encoder, then prompt encoder and mask decoder in one; each keeps its weights in an
+# .onnx_data file beside it.
+packages = ["vision_encoder.onnx", "prompt_encoder_mask_decoder.onnx"]
+base_url = "https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX/resolve/a7df49d8de14b9d2e4504d1687b0d568f905fd8d/onnx/"
+
+[[models.files]]
+path = "vision_encoder.onnx"
+size = 467440
+sha256 = "aacf1f7137bb6fffcf6bf166abcfabe28f57a76059254f3fb611c4a64a208119"
+
+[[models.files]]
+path = "vision_encoder.onnx_data"
+size = 162476288
+sha256 = "260fd1f0a34e72a3dc79a739e563b4facc0ba75504818b433a1f808e66637456"
+
+[[models.files]]
+path = "prompt_encoder_mask_decoder.onnx"
+size = 213114
+sha256 = "079c59b261f723ff5c6a125e69b0170a957b21c58738c28d2b0394ecd0587d7f"
+
+[[models.files]]
+path = "prompt_encoder_mask_decoder.onnx_data"
+size = 20958208
+sha256 = "f9e59a584ab8ced21fa812c211bc01084204db1c9e92a5ef4fb3a49972b4e864"
+
+[[models]]
+id = "realplksr-2x"
+tool = "Upscale"
+name = "RealPLKSR 2×"
+summary = "Twice the size, sharpening what is there without inventing detail"
+format = "ONNX · 512 → 1024"
+license = "MIT"
+copyright = ["Copyright (c) 2024 Dongheon Lee"]
+source = "darktable-org/upscale-realplksr-onnx"
+source_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx"
+platform = "linux"
+dir = "RealPLKSR-ONNX"
+packages = ["model_x2.onnx"]
+base_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx/resolve/0bb636eeeed5fffd256571c3cc440d9fdf62467e/onnx/"
+
+[[models.files]]
+path = "model_x2.onnx"
+size = 29627920
+sha256 = "d7abb65092f3808d3aa255ffdab42b1d672883915d90adbdd321204168b9f293"
+
+[[models]]
+id = "realplksr-4x"
+tool = "Upscale"
+name = "RealPLKSR 4×"
+summary = "Four times the size, sharpening what is there without inventing detail"
+format = "ONNX · 256 → 1024"
+license = "MIT"
+copyright = ["Copyright (c) 2024 Dongheon Lee"]
+source = "darktable-org/upscale-realplksr-onnx"
+source_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx"
+platform = "linux"
+dir = "RealPLKSR-ONNX"
+packages = ["model_x4.onnx"]
+base_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx/resolve/0bb636eeeed5fffd256571c3cc440d9fdf62467e/onnx/"
+
+[[models.files]]
+path = "model_x4.onnx"
+size = 29711010
+sha256 = "8ce692652494e2e5c31e1f7c7ab61eb084e9a450cde727a374f5d6746cfe054b"

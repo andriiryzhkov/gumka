@@ -51,6 +51,39 @@ pub enum Which {
     Upscaler(u32),
 }
 
+/// The computer models run on, as the app names it.
+pub const THIS_COMPUTER: &str = if cfg!(target_os = "macos") {
+    "This Mac"
+} else {
+    "This computer"
+};
+
+/// What runs the models here, before one is loaded.
+pub const BACKEND: &str = if cfg!(target_os = "macos") {
+    "Core ML"
+} else {
+    "ONNX Runtime"
+};
+
+/// A model found complete, as the app says it: macOS's come with the app, elsewhere they are
+/// downloaded.
+pub const FOUND: &str = if cfg!(target_os = "macos") {
+    "Included"
+} else {
+    "Downloaded"
+};
+
+/// Why the local runtime didn't load, once a model has tried. Only ONNX Runtime can be missing.
+#[cfg(target_os = "linux")]
+pub fn runtime_problem() -> Option<&'static str> {
+    gumka_infer::onnx::problem()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn runtime_problem() -> Option<&'static str> {
+    None
+}
+
 /// The upscalers there are, by scale.
 pub const UPSCALERS: [u32; 2] = [2, 4];
 
@@ -60,11 +93,14 @@ pub fn upscaler_slot(scale: u32) -> usize {
     UPSCALERS.iter().position(|&s| s == scale).unwrap_or(0)
 }
 
-/// The `scale`× upscaler's name, as the model registry gives it.
+/// The `scale`× upscaler's name, as the model registry gives it. An id has one name on every
+/// platform, so any entry gives it, also where none runs (Windows, for now).
 pub fn upscaler_name(scale: u32) -> String {
-    gumka_infer::models::upscaler_id(scale)
-        .and_then(gumka_infer::models::model)
-        .map_or_else(|_| format!("{scale}× upscaler"), |model| model.name.clone())
+    let id = gumka_infer::models::upscaler_id(scale).ok();
+    gumka_infer::models::registry()
+        .iter()
+        .find(|model| Some(model.id.as_str()) == id)
+        .map_or_else(|| format!("{scale}× upscaler"), |model| model.name.clone())
 }
 
 pub struct Erased {
@@ -485,6 +521,15 @@ fn load<T: ?Sized>(
     }
 }
 
+/// Whether the `scale`× upscaler's files are all there.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn upscaler_files(scale: u32) -> Result<(), String> {
+    gumka_infer::models::model(gumka_infer::models::upscaler_id(scale)?)?
+        .find_packages()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(target_os = "macos")]
 mod backend {
     use gumka_core::erase::Inpainter;
@@ -514,10 +559,7 @@ mod backend {
 
     /// Whether the `scale`× upscaler's files are all there, without loading it.
     pub fn find_upscaler(scale: u32) -> Result<(), String> {
-        models::model(models::upscaler_id(scale)?)?
-            .find_packages()
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        super::upscaler_files(scale)
     }
 
     pub fn load_upscaler(scale: u32) -> Loaded<dyn Upscaler> {
@@ -531,7 +573,45 @@ mod backend {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod backend {
+    use gumka_core::erase::Inpainter;
+    use gumka_core::select::Segmenter;
+    use gumka_core::upscale::Upscaler;
+    use gumka_infer::models;
+    use gumka_infer::onnx::{OnnxLama, OnnxSam, OnnxUpscaler, RUNS_ON};
+
+    use super::Loaded;
+
+    pub fn load_inpainter() -> Loaded<dyn Inpainter> {
+        let package = models::model(models::LAMA)?.find_packages()?.remove(0);
+        let lama = OnnxLama::load(&package).map_err(|e| e.to_string())?;
+        Ok((Box::new(lama), "LaMa".into(), RUNS_ON.into()))
+    }
+
+    pub fn load_segmenter() -> Loaded<dyn Segmenter> {
+        let sam = OnnxSam::load().map_err(|e| e.to_string())?;
+        Ok((Box::new(sam), "SAM 2.1 Small".into(), RUNS_ON.into()))
+    }
+
+    /// Whether the `scale`× upscaler's files are all there and ONNX Runtime loads, without
+    /// loading the model: an upscale that can't run isn't offered.
+    pub fn find_upscaler(scale: u32) -> Result<(), String> {
+        super::upscaler_files(scale)?;
+        gumka_infer::onnx::runtime().map(|_| ())
+    }
+
+    pub fn load_upscaler(scale: u32) -> Loaded<dyn Upscaler> {
+        let upscaler = OnnxUpscaler::load(scale).map_err(|e| e.to_string())?;
+        Ok((
+            Box::new(upscaler),
+            super::upscaler_name(scale),
+            RUNS_ON.into(),
+        ))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod backend {
     use gumka_core::erase::Inpainter;
     use gumka_core::select::Segmenter;

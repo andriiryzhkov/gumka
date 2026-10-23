@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What `gumka-cli upscale` refuses before it loads a model, run as the binary itself: the
-//! Neural Engine, and a result past the size limits. Neither needs the models.
+//! Neural Engine (on macOS; on Linux anything but the CPU), and a result past the size
+//! limits. Neither needs the models.
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -34,6 +35,7 @@ fn error(out: &Output) -> String {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn upscale_refuses_the_neural_engine_first() {
     let dir = folder("units");
     let (input, output) = (dir.join("missing.png"), dir.join("out.png"));
@@ -82,6 +84,7 @@ fn upscale_refuses_a_result_too_large_before_loading_a_model() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn unknown_units_get_a_specific_error() {
     let dir = folder("bogus-units");
     let (input, output) = (dir.join("missing.png"), dir.join("out.png"));
@@ -90,5 +93,29 @@ fn unknown_units_get_a_specific_error() {
         error(&out),
         "error: --units takes cpu or gpu, not \"bogus\""
     );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// On Linux ONNX Runtime runs on the CPU: other units are refused, the CPU gets as far as the
+/// input, which is missing.
+#[test]
+#[cfg(target_os = "linux")]
+fn upscale_takes_only_the_cpu_on_linux() {
+    let dir = folder("cpu-only");
+    let (input, output) = (dir.join("missing.png"), dir.join("out.png"));
+    for units in ["gpu", "ane"] {
+        let out = cli(&input, &output, &["--scale", "2", "--units", units]);
+        assert_eq!(
+            error(&out),
+            format!(
+                "error: --units takes only cpu here, where ONNX Runtime runs the models on the \
+                 CPU, not \"{units}\""
+            )
+        );
+    }
+    let out = cli(&input, &output, &["--scale", "2", "--units", "cpu"]);
+    let error = error(&out);
+    assert!(!error.contains("--units"), "{error}");
+    assert!(!output.exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
