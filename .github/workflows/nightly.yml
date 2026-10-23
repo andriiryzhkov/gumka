@@ -60,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the packaging tools
-        run: sudo apt-get update && sudo apt-get install -y squashfs-tools desktop-file-utils
+        run: sudo apt-get update && sudo apt-get install -y squashfs-tools desktop-file-utils zsync
       - name: Install Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -73,11 +73,13 @@ jobs:
       - name: Download and check the models
         run: cargo xtask models
       - name: Build the AppImage
-        run: cargo xtask bundle
+        # Named Gumka-nightly-x86_64.AppImage, and updating from the nightly release.
+        run: cargo xtask bundle --nightly
       - name: Collect the AppImage
+        # Its .zsync names it, so neither is renamed.
         run: |
           mkdir dist
-          mv target/bundle/Gumka-*-x86_64.AppImage dist/Gumka-nightly-x86_64.AppImage
+          mv target/bundle/Gumka-nightly-x86_64.AppImage target/bundle/Gumka-nightly-x86_64.AppImage.zsync dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gumka-nightly-linux-${{ github.sha }}
@@ -121,8 +123,8 @@ jobs:
           ```
 
           **Linux** (x86_64, glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and newer):
-          `Gumka-nightly-x86_64.AppImage`, with ONNX Runtime and the models inside. Make it
-          executable and run it:
+          `Gumka-nightly-x86_64.AppImage`, with ONNX Runtime and the models inside; AppImage
+          updaters take it to the next nightly. Make it executable and run it:
 
           ```sh
           chmod +x Gumka-nightly-x86_64.AppImage

@@ -36,13 +36,14 @@ The app is about 360 MB, the disk image about 310 MB, almost all of it model wei
 
 ```sh
 cargo xtask models                 # once: the models, checked against models.toml
-cargo xtask bundle                 # target/bundle/Gumka.AppDir and Gumka-<version>-x86_64.AppImage
+cargo xtask bundle                 # target/bundle/Gumka.AppDir, Gumka-<version>-x86_64.AppImage and its .zsync
+cargo xtask bundle --nightly       # Gumka-nightly-x86_64.AppImage, updating from the nightly release
 cargo xtask bundle --no-appimage   # the AppDir only
 ```
 
 `cargo xtask bundle` (`xtask/src/appimage.rs`) runs on x86_64 Linux and needs `mksquashfs`
-(`squashfs-tools`), `desktop-file-validate` (`desktop-file-utils`) and `tar`; it takes a few
-seconds once the app is built. It:
+(`squashfs-tools`), `desktop-file-validate` (`desktop-file-utils`), `zsyncmake` (`zsync`) and
+`tar`; it takes a few seconds once the app is built. It:
 
 1. checks every model file for this platform against `models.toml` (size and SHA-256);
 2. downloads ONNX Runtime and the AppImage runtime into `target/bundle/downloads`, once, each
@@ -69,7 +70,30 @@ seconds once the app is built. It:
      `AppRun`, a shell script that sets `ORT_DISABLE_TELEMETRY=1` (see below) and starts
      `usr/bin/gumka` with its arguments;
 5. packs the AppDir into a SquashFS image (zstd, 1 MB blocks) behind the runtime: an
-   executable file.
+   executable file. The runtime's `.upd_info` section gets the update information first (the
+   downloaded runtime file itself is left as checked);
+6. makes `<AppImage>.zsync` beside it with `zsyncmake`.
+
+### Updates
+
+An AppImage updater (AppImageUpdate, or a desktop's AppImage manager) reads the update
+information in the AppImage, finds the `.zsync` file it names, and downloads only the blocks
+that changed: a new build differs mostly in the app, not the models, so an update is far
+smaller than the 435 MB. The update information is
+`gh-releases-zsync|andriiryzhkov|gumka|latest|Gumka-*-x86_64.AppImage.zsync` for a release (the
+newest GitHub release, never a pre-release) and
+`gh-releases-zsync|andriiryzhkov|gumka|latest-pre|Gumka-nightly-x86_64.AppImage.zsync` for a
+nightly (`--nightly`), so each follows its own channel. The nightly names the newest pre-release,
+not its tag: Gear Lever takes only `latest`, `latest-pre` and `latest-all` (4.6.2: any other
+value means the latest stable release, which has no nightly), and looks through the releases for
+the first with a matching file. AppImageUpdate takes the newest pre-release as it is, so right
+after a beta release (also a pre-release) it finds no nightly until the next nightly build.
+Gear Lever compares the `.zsync`'s SHA-1 with the AppImage's to see whether there is an update,
+but downloads the whole new AppImage. The `.zsync` file names its AppImage by
+file name, so the two are published side by side and not renamed: that is why the nightly is
+built under its final name instead of being renamed afterwards. `--appimage-updateinformation`
+prints what an AppImage has. Updates aren't signed (the runtime's `.sha256_sig` section stays
+empty).
 
 The AppImage is about 435 MB, almost all of it model weights (they compress little).
 
@@ -104,13 +128,13 @@ Three GitHub Actions workflows in `.github/workflows`:
 | Workflow | Runs on | Does |
 |---|---|---|
 | `ci.yml` | every pull request (and when called by the other two) | format, clippy and tests on macOS, Windows and Linux, warnings as errors |
-| `nightly.yml` | every push to `main` | CI, then `cargo xtask bundle` on macOS and on Linux (`ubuntu-22.04`) side by side; a last job replaces the rolling **nightly** pre-release (tag `nightly`, `Gumka-nightly-arm64.dmg` and `Gumka-nightly-x86_64.AppImage`) once both are built. Each is also kept as a workflow artifact for 14 days. Only the newest push is built. |
-| `release.yml` | a pushed tag `release-<version>` | CI and a check of the tag's version, then `cargo xtask bundle --universal` on macOS and `cargo xtask bundle` on Linux; a last job publishes the GitHub release `Gumka <version>` with the disk image, the AppImage and generated notes. A version with a hyphen (`0.2.0-beta.1`) is a pre-release. |
+| `nightly.yml` | every push to `main` | CI, then `cargo xtask bundle` on macOS and on Linux (`ubuntu-22.04`) side by side; a last job replaces the rolling **nightly** pre-release (tag `nightly`, `Gumka-nightly-arm64.dmg`, and `Gumka-nightly-x86_64.AppImage` with its `.zsync`) once both are built. Each is also kept as a workflow artifact for 14 days. Only the newest push is built. |
+| `release.yml` | a pushed tag `release-<version>` | CI and a check of the tag's version, then `cargo xtask bundle --universal` on macOS and `cargo xtask bundle` on Linux; a last job publishes the GitHub release `Gumka <version>` with the disk image, the AppImage and its `.zsync`, and generated notes. A version with a hyphen (`0.2.0-beta.1`) is a pre-release. |
 
 The models are downloaded on the runner by `cargo xtask models`, cached by the hash of
 `models.toml` (the Linux key also names the OS, so the two platforms' models don't share a
-cache entry), and checked against it every time. The Linux job installs `squashfs-tools` and
-`desktop-file-utils` from Ubuntu's archive.
+cache entry), and checked against it every time. The Linux job installs `squashfs-tools`,
+`desktop-file-utils` and `zsync` from Ubuntu's archive.
 
 Nothing in the workflows moves on its own:
 
@@ -173,8 +197,8 @@ Notarizing needs Xcode selected (`sudo xcode-select -s /Applications/Xcode.app`)
 ## Other platforms (later)
 
 A Windows installer, a deb or Flatpak for Linux, and an AppImage for ARM: the same `cargo xtask`
-approach. Windows signing is optional (SmartScreen warnings otherwise). The AppImage isn't
-signed and carries no update information.
+approach. Windows signing is optional (SmartScreen warnings otherwise). The AppImage and its
+updates aren't signed.
 
 ## Distribution
 

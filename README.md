@@ -15,8 +15,8 @@ and metadata:
 Early development: macOS 13 or later (Apple Silicon), and Linux (x86_64).
 
 On Linux, download the AppImage from the releases (glibc 2.35 or later: Ubuntu 22.04, Debian 12,
-Fedora 36 and newer). It carries ONNX Runtime and the models, which run on the CPU; make it
-executable and run it:
+Fedora 36 and newer). It carries ONNX Runtime and the models, which run on the CPU, and AppImage
+updaters can bring it up to date, downloading only what changed. Make it executable and run it:
 
 ```sh
 chmod +x Gumka-*-x86_64.AppImage
