@@ -106,27 +106,11 @@ impl Exif {
 /// Unlinks EXIF's second directory (the thumbnail's) and blanks the thumbnail it points at, in
 /// place, so every other offset in the blob stays valid. Leaves a malformed blob alone.
 fn drop_thumbnail(blob: &mut [u8]) {
-    let le = match blob.get(0..2) {
-        Some(b"II") => true,
-        Some(b"MM") => false,
-        _ => return,
+    let Some(le) = little_endian(blob) else {
+        return;
     };
-    let u16_at = |b: &[u8], at: usize| {
-        let s: [u8; 2] = b.get(at..at.checked_add(2)?)?.try_into().ok()?;
-        Some(if le {
-            u16::from_le_bytes(s)
-        } else {
-            u16::from_be_bytes(s)
-        })
-    };
-    let u32_at = |b: &[u8], at: usize| {
-        let s: [u8; 4] = b.get(at..at.checked_add(4)?)?.try_into().ok()?;
-        Some(if le {
-            u32::from_le_bytes(s)
-        } else {
-            u32::from_be_bytes(s)
-        } as usize)
-    };
+    let u16_at = |b: &[u8], at: usize| read_u16(b, at, le);
+    let u32_at = |b: &[u8], at: usize| read_u32(b, at, le).map(|v| v as usize);
     let Some(ifd0) = u32_at(blob, 4) else { return };
     let Some(count) = u16_at(blob, ifd0) else {
         return;
@@ -142,16 +126,10 @@ fn drop_thumbnail(blob: &mut [u8]) {
         return;
     };
     let (mut offset, mut length) = (None, None);
-    for i in 0..entries {
-        let at = ifd1 + 2 + 12 * i;
-        let (Some(tag), Some(ty), Some(1)) =
-            (u16_at(blob, at), u16_at(blob, at + 2), u32_at(blob, at + 4))
-        else {
-            continue;
-        };
+    for (at, tag, ty) in single_entries(blob, ifd1, le) {
         let value = match ty {
-            3 => u16_at(blob, at + 8).map(usize::from),
-            4 => u32_at(blob, at + 8),
+            3 => u16_at(blob, at).map(usize::from),
+            4 => u32_at(blob, at),
             _ => None,
         };
         match tag {
@@ -167,6 +145,110 @@ fn drop_thumbnail(blob: &mut [u8]) {
     }
     if let Some(directory) = blob.get_mut(ifd1..ifd1 + 2 + 12 * entries + 4) {
         directory.fill(0);
+    }
+}
+
+/// Writes a new pixel size into EXIF's own record of it, in place: the main directory's image
+/// width and length (256, 257) and the EXIF directory's pixel dimensions (40962, 40963), where
+/// each is a single SHORT or LONG that the new value fits. Leaves a malformed blob alone.
+pub(crate) fn set_pixel_dimensions(blob: &mut [u8], width: u32, height: u32) {
+    let Some(le) = little_endian(blob) else {
+        return;
+    };
+    let Some(ifd0) = read_u32(blob, 4, le).map(|v| v as usize) else {
+        return;
+    };
+    set_sizes(blob, ifd0, le, [(256, width), (257, height)]);
+    if let Some(exif) = pointer(blob, ifd0, le, EXIF_DIRECTORY) {
+        set_sizes(blob, exif, le, [(40962, width), (40963, height)]);
+    }
+}
+
+/// The EXIF directory's pointer tag.
+pub(crate) const EXIF_DIRECTORY: u16 = 34665;
+
+/// The byte order a TIFF structure starts with: true for little-endian.
+fn little_endian(blob: &[u8]) -> Option<bool> {
+    match blob.get(0..2)? {
+        b"II" => Some(true),
+        b"MM" => Some(false),
+        _ => None,
+    }
+}
+
+fn read_u16(b: &[u8], at: usize, le: bool) -> Option<u16> {
+    let s: [u8; 2] = b.get(at..at.checked_add(2)?)?.try_into().ok()?;
+    Some(if le {
+        u16::from_le_bytes(s)
+    } else {
+        u16::from_be_bytes(s)
+    })
+}
+
+fn read_u32(b: &[u8], at: usize, le: bool) -> Option<u32> {
+    let s: [u8; 4] = b.get(at..at.checked_add(4)?)?.try_into().ok()?;
+    Some(if le {
+        u32::from_le_bytes(s)
+    } else {
+        u32::from_be_bytes(s)
+    })
+}
+
+fn write(b: &mut [u8], at: usize, bytes: &[u8]) {
+    if let Some(slot) = at
+        .checked_add(bytes.len())
+        .and_then(|end| b.get_mut(at..end))
+    {
+        slot.copy_from_slice(bytes);
+    }
+}
+
+/// The entries of the directory at `ifd` that hold one value: (where the value is, tag, type).
+fn single_entries(blob: &[u8], ifd: usize, le: bool) -> Vec<(usize, u16, u16)> {
+    let count = read_u16(blob, ifd, le).map_or(0, usize::from);
+    (0..count)
+        .filter_map(|i| {
+            let at = ifd.checked_add(2 + 12 * i)?;
+            let tag = read_u16(blob, at, le)?;
+            let ty = read_u16(blob, at + 2, le)?;
+            (read_u32(blob, at + 4, le)? == 1).then_some((at + 8, tag, ty))
+        })
+        .collect()
+}
+
+/// Where the sub-directory that `tag` points to starts.
+fn pointer(blob: &[u8], ifd: usize, le: bool, tag: u16) -> Option<usize> {
+    single_entries(blob, ifd, le)
+        .into_iter()
+        .find(|&(_, t, ty)| t == tag && (ty == 4 || ty == 13))
+        .and_then(|(at, _, _)| read_u32(blob, at, le))
+        .map(|v| v as usize)
+}
+
+/// Sets each (tag, value) in the directory at `ifd`, where it holds a SHORT or LONG.
+fn set_sizes(blob: &mut [u8], ifd: usize, le: bool, values: [(u16, u32); 2]) {
+    for (at, tag, ty) in single_entries(blob, ifd, le) {
+        let Some(&(_, value)) = values.iter().find(|(t, _)| *t == tag) else {
+            continue;
+        };
+        match (ty, u16::try_from(value)) {
+            // A SHORT sits in the first two bytes of the value field, in either byte order.
+            (3, Ok(v)) => write(
+                blob,
+                at,
+                &if le { v.to_le_bytes() } else { v.to_be_bytes() },
+            ),
+            (4, _) => write(
+                blob,
+                at,
+                &if le {
+                    value.to_le_bytes()
+                } else {
+                    value.to_be_bytes()
+                },
+            ),
+            _ => {}
+        }
     }
 }
 
@@ -681,6 +763,35 @@ mod tests {
         assert_eq!(Exif::Blob(out).orientation(), 6);
     }
 
+    /// Cut short anywhere, the blob is never read past its end, IFD0 stays as it was, and the
+    /// parts of the second directory and the thumbnail that aren't all there are left alone.
+    #[test]
+    fn a_truncated_thumbnail_is_left_alone() {
+        let whole = blob_with_thumbnail();
+        for end in 0..whole.len() {
+            let mut cut = whole[..end].to_vec();
+            drop_thumbnail(&mut cut);
+            assert_eq!(
+                cut[..end.min(22)],
+                whole[..end.min(22)],
+                "IFD0, cut at {end}"
+            );
+            if end < 26 {
+                assert_eq!(
+                    cut,
+                    whole[..end],
+                    "no second directory to unlink, cut at {end}"
+                );
+            } else {
+                assert_eq!(cut[22..26], [0; 4], "unlinked, cut at {end}");
+                // The directory ends at 56, the thumbnail at 60.
+                let kept = if end < 56 { 26 } else { 56 };
+                assert!(cut[26..kept].iter().all(|&b| b == 0), "cut at {end}");
+                assert_eq!(cut[kept..], whole[kept..end], "not all there, cut at {end}");
+            }
+        }
+    }
+
     /// Only a TIFF structure that reads is kept (review-B #7, test-B #5).
     #[test]
     fn exif_that_isnt_a_readable_tiff_is_dropped() {
@@ -693,6 +804,86 @@ mod tests {
         lost.extend_from_slice(&[0; 20]);
         assert!(Exif::from_blob(lost).is_none(), "IFD0 past the end");
         assert!(Exif::from_blob(blob_with_thumbnail()).is_some());
+    }
+
+    /// EXIF holding the size twice, as JPEGs from cameras do: IFD0's width (SHORT) and length
+    /// (LONG), and the EXIF directory's pixel dimensions (SHORT, LONG).
+    fn blob_with_sizes(le: bool, (w, h): (u32, u32)) -> Vec<u8> {
+        let u16b = |v: u16| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        let u32b = |v: u32| if le { v.to_le_bytes() } else { v.to_be_bytes() };
+        let entry = |tag: u16, ty: u16, value: u32| {
+            let field = if ty == 3 {
+                [u16b(value as u16).as_slice(), &[0, 0]].concat()
+            } else {
+                u32b(value).to_vec()
+            };
+            [u16b(tag).as_slice(), &u16b(ty), &u32b(1), &field].concat()
+        };
+        let mut blob = if le { b"II".to_vec() } else { b"MM".to_vec() };
+        blob.extend_from_slice(&u16b(42));
+        blob.extend_from_slice(&u32b(8));
+        // IFD0 at 8: three entries, so the EXIF directory starts at 8 + 2 + 36 + 4 = 50.
+        blob.extend_from_slice(&u16b(3));
+        blob.extend(entry(256, 3, w));
+        blob.extend(entry(257, 4, h));
+        blob.extend(entry(34665, 4, 50));
+        blob.extend_from_slice(&u32b(0));
+        blob.extend_from_slice(&u16b(2));
+        blob.extend(entry(40962, 3, w));
+        blob.extend(entry(40963, 4, h));
+        blob.extend_from_slice(&u32b(0));
+        blob
+    }
+
+    fn sizes_in(blob: &[u8]) -> Vec<u64> {
+        let tags = tiff_io::exif_from_blob(blob).unwrap();
+        let number = |v: &TagValue| match v.ty {
+            tiff::tags::Type::SHORT => u64::from(u16::from_ne_bytes([v.bytes[0], v.bytes[1]])),
+            _ => u64::from(u32::from_ne_bytes(v.bytes[..4].try_into().unwrap())),
+        };
+        let exif = &tags.children.iter().find(|(c, _)| *c == 34665).unwrap().1;
+        // The main directory's size tags are layout tags, which reading leaves out: read them
+        // from the bytes.
+        let le = blob.starts_with(b"II");
+        let width = read_u16(blob, 8 + 2 + 8, le).unwrap();
+        let length = read_u32(blob, 8 + 2 + 12 + 8, le).unwrap();
+        vec![
+            u64::from(width),
+            u64::from(length),
+            number(exif.get(40962).unwrap()),
+            number(exif.get(40963).unwrap()),
+        ]
+    }
+
+    #[test]
+    fn a_new_pixel_size_is_written_into_the_exif_bytes() {
+        for le in [true, false] {
+            let mut blob = blob_with_sizes(le, (37, 23));
+            set_pixel_dimensions(&mut blob, 74, 46);
+            assert_eq!(sizes_in(&blob), [74, 46, 74, 46], "little-endian {le}");
+
+            // A value a SHORT can't hold stays as it was there; a LONG takes it.
+            let mut blob = blob_with_sizes(le, (37, 23));
+            set_pixel_dimensions(&mut blob, 70_000, 80_000);
+            assert_eq!(sizes_in(&blob), [37, 80_000, 37, 80_000]);
+        }
+    }
+
+    #[test]
+    fn broken_exif_bytes_are_left_alone() {
+        let whole = blob_with_sizes(true, (37, 23));
+        for end in 0..whole.len() {
+            let mut cut = whole[..end].to_vec();
+            set_pixel_dimensions(&mut cut, 74, 46);
+        }
+        let mut lost = whole.clone();
+        lost[4..8].copy_from_slice(&4000u32.to_le_bytes());
+        set_pixel_dimensions(&mut lost, 74, 46);
+        assert_eq!(
+            &lost[8..],
+            &whole[8..],
+            "nothing written when IFD0 is past the end"
+        );
     }
 
     #[test]

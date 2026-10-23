@@ -13,25 +13,26 @@ its contents into tracked files.
 ## The project
 
 Gumka is an extensible AI photo-retouching app: a native Rust + egui desktop app that erases
-objects with LaMa and selects them with SAM 2.1, on-device through Core ML, working on 16-bit,
-wide-gamut TIFF / PNG / JPEG files without losing their metadata. It runs standalone and as the
-external editor of RAW editors (any that send a file and pick it up when it is saved in place).
-macOS 13+ on Apple Silicon is the working platform; Windows and Linux must keep building but have
-no model backend yet. License: GPL-3.0-or-later.
+objects with LaMa, selects them with SAM 2.1 and upscales with RealPLKSR, on-device through Core
+ML, working on 16-bit, wide-gamut TIFF / PNG / JPEG files without losing their metadata. It runs
+standalone and as the external editor of RAW editors (any that send a file and pick it up when it
+is saved in place). macOS 13+ on Apple Silicon is the working platform; Windows and Linux must
+keep building but have no model backend yet. License: GPL-3.0-or-later.
 Current status and scope: [docs/overview.md](docs/overview.md).
 
 ## Repository map
 
 | Path | What it is |
 |---|---|
-| `crates/gumka-core` | Pictures, TIFF/PNG/JPEG I/O and metadata, color, erase and select pipelines. No UI, no ML. |
-| `crates/gumka-infer` | Model registry and the Core ML backend (LaMa, SAM). |
-| `crates/gumka-cli` | `gumka-cli erase` and `gumka-cli select`. |
+| `crates/gumka-core` | Pictures, TIFF/PNG/JPEG I/O and metadata, color, erase, select and upscale pipelines. No UI, no ML. |
+| `crates/gumka-infer` | Model registry and the Core ML backend (LaMa, SAM, RealPLKSR). |
+| `crates/gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
 | `crates/gumka-app` | The egui app (binary `gumka`). |
 | `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
 | `rust-toolchain.toml` | The pinned Rust version, used locally and in CI. |
 | `models/` | Downloaded models (git-ignored). |
+| `tools/convert` | Python scripts (uv) that convert the models we convert ourselves; run by hand, not part of the build. |
 | `.github/workflows` | CI on pull requests, the nightly build on pushes to `main`, releases on `release-*` tags. |
 | `assets/logo` | The logo SVGs. |
 | `docs/` | Developer documentation. `README.md` at the root is for users. |
@@ -41,7 +42,7 @@ Module-level detail: [docs/architecture.md](docs/architecture.md).
 ## Commands
 
 ```sh
-cargo xtask models                                   # once: download the models (~310 MB)
+cargo xtask models                                   # once: download the models (~340 MB)
 cargo run --release -p gumka-app [-- IMAGE]          # the app
 cargo run --release -p gumka-cli -- erase IN MASK OUT
 cargo xtask bundle                                   # target/bundle/Gumka.app and a .dmg (unsigned)
@@ -68,7 +69,8 @@ and Windows from a Mac needs a dummy Little CMS library; see
 
 - **Untouched pixels stay bit-identical.** Pixels outside the erased region (the mask and its
   soft edge) must be identical to the input, in memory and in TIFF/PNG output. Never convert,
-  re-quantize or round-trip them. Tests must keep proving it.
+  re-quantize or round-trip them. Tests must keep proving it. A whole-image tool (Upscale)
+  changes every pixel; its undo must bring back the original exactly.
 - **Never lose the user's work or files.** Saves go through a temporary file, a sync and a
   rename. Every save keeps bit depth, gray or color, the ICC profile and the metadata the target
   format can hold. When something can't be kept correctly, refuse with a clear message instead of
@@ -77,7 +79,8 @@ and Windows from a Mac needs a dummy Little CMS library; see
   claims. Bounds-check every offset, use checked arithmetic, and drop a malformed metadata block
   rather than failing the open or the save. Fuzz new parsers.
 - **Color is never changed silently.** Models get the stored values, converted only for linear
-  or very wide profiles and only inside the crop; the display converts a copy
+  or very wide profiles: inside the crop for Erase, per tile for Upscale, where the inspector
+  says when colors beyond P3 may be clipped. The display converts a copy
   ([docs/color.md](docs/color.md)).
 - **Models:** weights never go in git. The models the default tools need are bundled with the
   app; optional models may only ever be downloaded when the user asks, verified against

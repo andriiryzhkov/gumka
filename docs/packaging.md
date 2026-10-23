@@ -30,7 +30,7 @@ once for the pinned toolchain). It:
 4. makes a compressed, read-only disk image (UDZO, HFS+) holding the app and a link to
    `/Applications`.
 
-The app is about 330 MB, the disk image about 280 MB, almost all of it model weights.
+The app is about 360 MB, the disk image about 310 MB, almost all of it model weights.
 
 ## CI and releases
 

@@ -39,12 +39,26 @@ Models are looked up, in order, in `$GUMKA_MODELS`, the app bundle's
 Compiled Core ML models are cached in `~/Library/Caches/Gumka/models`
 ([inference.md](inference.md)).
 
+### Converting models
+
+A model we convert ourselves has its script in `tools/convert/<model>/`. The scripts are Python,
+with dependencies pinned in `pyproject.toml` and `uv.lock`, and are run with
+[uv](https://docs.astral.sh/uv/). They aren't part of the build: run one by hand when its model
+changes, publish the output, then pin it in `models.toml`.
+
+- `tools/convert/realplksr/` converts the Upscale models. Its README covers running it, what it
+  checks, and publishing the result.
+- Each script downloads only pinned, checksummed sources, and checks its output against the
+  original framework on generated inputs, never on personal photos.
+- The `.venv/` and `out/` folders are git-ignored. Weights never go in git.
+
 ## Running
 
 ```sh
 cargo run --release -p gumka-app [-- IMAGE]
 cargo run --release -p gumka-cli -- erase IN MASK OUT [--units cpu|gpu|ane|all]
 cargo run --release -p gumka-cli -- select IN OUT_MASK --click X,Y [--exclude X,Y]
+cargo run --release -p gumka-cli -- upscale IN OUT --scale FACTOR [--units cpu|gpu]
 cargo run --release -p gumka-infer --example coreml_spike -- models/LaMa.mlpackage \
     [--units cpu|gpu|ane|all] [IMAGE.png MASK.png OUT.png [REFERENCE.png]]
 ```
@@ -54,6 +68,10 @@ cargo run --release -p gumka-infer --example coreml_spike -- models/LaMa.mlpacka
   warns when IN has an orientation and when MASK is a JPEG (compression noise near black counts
   as erase), and a mask the size of the turned picture is refused with an error naming the
   orientation.
+- `upscale` refuses `--units ane` and `all` (RealPLKSR gives wrong results on the Neural
+  Engine), and a scale whose result would be too large: it says to use a smaller one or, when
+  not even 1.25× fits, that the picture is already as large as upscale can make it. An unknown `--units`
+  value gets an error that names it.
 - On Windows and Linux the app takes the file as a command-line argument; on macOS it will come
   as an "open documents" event ([opening-and-saving.md](opening-and-saving.md)).
 - `cargo xtask bundle` builds the macOS app and disk image in `target/bundle`

@@ -9,8 +9,13 @@ Linux) or through an API (later; see [overview.md](overview.md#goals-and-scope))
   current LaMa takes and returns pixel buffers; SAM's encoder outputs go to its decoder as Core
   ML arrays without copying (`coreml::MultiArray`). All `unsafe` Core ML and Core Video calls
   stay in `gumka-infer/src/coreml.rs`.
+- RealPLKSR takes and returns float32 arrays, so 16-bit pictures keep their precision; it
+  computes in float16. `MultiArray` copies a row at a time, since Core ML pads only between
+  rows; a 512 px tile goes in and out in milliseconds against a run of over a second.
 - Choose compute units per model: start LaMa on CPU+GPU; enable the Neural Engine only after its
-  output matches the reference (conversions can change numerics on different units).
+  output matches the reference (conversions can change numerics on different units). RealPLKSR
+  stays on CPU+GPU: on the Neural Engine its output is wrong (29-36 dB against PyTorch) and
+  hardly faster.
 - Measured on the MacBook Air, LaMa 800×800: about 0.7 s per run on CPU+GPU, about 0.75 s with
   All (the Neural Engine adds nothing), about 2 s on the CPU only. Outputs agree within 1/255
   across units.

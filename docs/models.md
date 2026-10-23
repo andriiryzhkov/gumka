@@ -18,11 +18,11 @@ an entry in `models.toml`, plus code only if it needs a new adapter.
 
 - Every model must have a license compatible with GPL-3.0-or-later that allows commercial use.
   Never include non-commercial-only models. Each model's license text ships in the app bundle.
-- The models the default tools need (LaMa, SAM) are bundled with the app: `cargo xtask bundle`
-  compiles them to `.mlmodelc` from checked downloads ([packaging.md](packaging.md)). The app
-  works offline from its first launch, and its contents are what was tested.
-- Optional and large models (a second erase model, upscalers; planned): downloaded only when the
-  user asks, from the Models page, into `~/Library/Application Support/Gumka/models`, verified
+- The models the tools need (LaMa, SAM, the RealPLKSR upscalers) are bundled with the app:
+  `cargo xtask bundle` compiles them to `.mlmodelc` from checked downloads
+  ([packaging.md](packaging.md)). The app works offline from its first launch, and its contents
+  are what was tested. Small models are bundled; the upscalers are 15 MB each.
+- Optional and large models (a second erase model; planned): downloaded only when the user asks, from the Models page, into `~/Library/Application Support/Gumka/models`, verified
   against `models.toml` (size and SHA-256), never in the background; they survive app updates.
   Keep the bundle under about 500 MB. Multi-gigabyte generative models (Fill, Extend) use the
   API, or an optional download with a clear disk-space warning.
@@ -34,8 +34,10 @@ an entry in `models.toml`, plus code only if it needs a new adapter.
 |---|---|---|---|---|
 | LaMa (Big LaMa) | Erase | Core ML `.mlpackage` | [mlboydaisuke/LaMa-CoreML](https://huggingface.co/mlboydaisuke/LaMa-CoreML) | Apache-2.0 |
 | SAM 2.1 Small | Select object | Core ML, 3 × `.mlpackage` | [apple/coreml-sam2.1-small](https://huggingface.co/apple/coreml-sam2.1-small) | Apache-2.0 |
+| RealPLKSR 2× and 4× | Upscale | Core ML `.mlpackage` each, our conversion | [gumka/realplksr-coreml](https://huggingface.co/gumka/realplksr-coreml), from dslisleedh/PLKSR (weights by neosr-project) | MIT |
 
-LaMa and SAM 2 are Apache 2.0, compatible with GPL-3.0.
+LaMa and SAM 2 are Apache 2.0, RealPLKSR is MIT; all are compatible with GPL-3.0. MIT names its
+copyright holder, so the registry's `copyright` lines go into the bundled notice before the text.
 
 ## LaMa (Core ML)
 
@@ -68,6 +70,30 @@ LaMa and SAM 2 are Apache 2.0, compatible with GPL-3.0.
     [1, 2..15, 256]: the clicks plus a padding point, so one selection takes at most 14 clicks.
 - The encoder outputs go to the decoder as Core ML arrays without copying
   (`coreml::MultiArray`).
+
+## RealPLKSR (Core ML)
+
+- Upstream: PLKSR, "Partial Large Kernel CNNs for Efficient Super-Resolution" (Dongheon Lee et
+  al., 2024), <https://github.com/dslisleedh/PLKSR>, MIT, "Copyright (c) 2024 Dongheon Lee".
+  RealPLKSR, its variant for real-world photos, and the checkpoints are neosr-project's,
+  released under the same MIT license in
+  [PLKSR issue #4](https://github.com/dslisleedh/PLKSR/issues/4).
+- The "MSSIM pretrain" checkpoints, 2× and 4× (7.4 M parameters, pixel-shuffle upsampler),
+  trained without GAN fine-tuning: they sharpen what is there rather than invent detail. Taken
+  from darktable's mirror, `darktable-org/upscale-realplksr-onnx`, at a pinned revision and
+  checked by SHA-256.
+- Core ML conversion: ours, `tools/convert/realplksr/convert.py` (spandrel, `torch.jit.trace`,
+  coremltools 9.0; ML Program, float16 compute, macOS 13). Published at
+  [gumka/realplksr-coreml](https://huggingface.co/gumka/realplksr-coreml) and pinned in
+  `models.toml`.
+- Inputs: `input` float32 [1, 3, 512, 512], planar RGB from 0 to 1. Output: `output` float32
+  [1, 3, 1024, 1024] (2×) or [1, 3, 2048, 2048] (4×). The pipeline tiles pictures with 16 px of
+  context per side ([upscale-pipeline.md](upscale-pipeline.md)).
+- Checked against PyTorch on generated tiles: 72-75 dB PSNR on CPU and GPU, with no seams
+  (errors at tile borders no larger than elsewhere). On the Neural Engine it is wrong (29-36 dB)
+  and hardly faster, so it runs on CPU and GPU.
+- About 1.3 s (2×) and 1.5 s (4×) per tile on an M4: about 15 MFLOP per input pixel, so a 24 MP
+  photo takes 2 to 3 minutes.
 
 ## Candidates and exclusions
 

@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+fast_image_resize = "6.1.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 lcms2 = { version = "6.2.0", default-features = false, features = ["static"] }
 # The version image uses; read and written directly for every chunk (see png_io.rs).

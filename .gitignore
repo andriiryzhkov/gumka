@@ -1,6 +1,10 @@
 /target/
 # Downloaded and converted models; see docs/models.md for sources.
 /models/
+# Python environments, bytecode and outputs of the model conversion scripts.
+/tools/convert/*/.venv/
+/tools/convert/*/out/
+__pycache__/
 .DS_Store
 # Local agent instructions that override AGENTS.md; never committed.
 /AGENTS.local.md

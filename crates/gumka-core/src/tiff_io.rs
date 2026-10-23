@@ -28,7 +28,7 @@ use tiff::tags::{ByteOrder, ExtraSamples, IfdPointer, Predictor, Tag, Type, Valu
 use tiff::{ColorType, Directory};
 
 use crate::Rgb16;
-use crate::meta::{self, Density, DensityUnit, Exif, Metadata};
+use crate::meta::{self, Density, DensityUnit, EXIF_DIRECTORY, Exif, Metadata};
 use crate::picture::{Decoded, Error, Image, Result, gray_value, to_u8};
 
 const ICC_PROFILE: u16 = 34675;
@@ -43,7 +43,7 @@ const MATTEING: u16 = 32995;
 const BLOB_TAGS: [u16; 4] = [ICC_PROFILE, XMP, IPTC, PHOTOSHOP];
 
 /// Sub-directory pointers that are followed and rewritten: EXIF, GPS, interoperability.
-const SUB_DIRECTORIES: [u16; 3] = [34665, 34853, 40965];
+const SUB_DIRECTORIES: [u16; 3] = [EXIF_DIRECTORY, 34853, 40965];
 
 /// How deep sub-directories are followed (main, EXIF, interoperability, and one spare).
 const MAX_DEPTH: usize = 3;
@@ -91,6 +91,13 @@ impl TagValue {
         }
     }
 
+    pub fn from_long(value: u32) -> Self {
+        TagValue {
+            ty: Type::LONG,
+            bytes: value.to_ne_bytes().to_vec(),
+        }
+    }
+
     pub fn short(&self) -> Option<u16> {
         let b = self.bytes.get(0..2).filter(|_| self.ty == Type::SHORT)?;
         Some(u16::from_ne_bytes([b[0], b[1]]))
@@ -127,6 +134,27 @@ impl TagDirectory {
         self.tags.is_empty() && self.children.is_empty()
     }
 }
+
+/// Writes a new pixel size into EXIF's record of it (40962, 40963), where present. A SHORT stays
+/// a SHORT when the value fits.
+pub(crate) fn set_pixel_dimensions(tags: &mut TagDirectory, width: u32, height: u32) {
+    for (code, child) in &mut tags.children {
+        if *code != EXIF_DIRECTORY {
+            continue;
+        }
+        for (tag, value) in [(PIXEL_X_DIMENSION, width), (PIXEL_Y_DIMENSION, height)] {
+            let Some(old) = child.get(tag) else { continue };
+            let new = match (old.ty, u16::try_from(value)) {
+                (Type::SHORT, Ok(v)) => TagValue::from_short(v),
+                _ => TagValue::from_long(value),
+            };
+            child.set(tag, new);
+        }
+    }
+}
+
+const PIXEL_X_DIMENSION: u16 = 40962;
+const PIXEL_Y_DIMENSION: u16 = 40963;
 
 /// What a TIFF source keeps for being written as TIFF again: its compression and predictor,
 /// and the types its byte streams were declared as.
@@ -470,6 +498,10 @@ pub(crate) fn write<W: Write + Seek>(
         }
         None => TagDirectory::default(),
     };
+    if image.resized {
+        let (w, h) = image.pixels.dimensions();
+        set_pixel_dimensions(&mut tags, w, h);
+    }
     // The encoder writes a resolution of 1/1 with no unit, which macOS reads as 1 pixel per
     // inch. A resolution that only says the pixels are square (no unit, equal values: JFIF's
     // and pHYs's usual, and the tiff crate's default) says no more than none. Without one, 72
@@ -743,7 +775,7 @@ mod tests {
         dir.extend_from(&Directory::from_iter([(Tag::Unknown(33723), iptc)]));
         dir.write_tag(Tag::Orientation, 6u16).unwrap();
         dir.write_tag(Tag::Software, "Capture One").unwrap();
-        dir.write_tag(Tag::Unknown(34665), exif).unwrap();
+        dir.write_tag(Tag::Unknown(EXIF_DIRECTORY), exif).unwrap();
         tiff.resolution(
             tiff::tags::ResolutionUnit::Inch,
             tiff::encoder::Rational { n: 300, d: 1 },
@@ -795,7 +827,7 @@ mod tests {
 
         // EXIF directory: same tags and values, re-linked.
         let exif_b = b
-            .get_tag(Tag::Unknown(34665))
+            .get_tag(Tag::Unknown(EXIF_DIRECTORY))
             .unwrap()
             .into_ifd_pointer()
             .unwrap();

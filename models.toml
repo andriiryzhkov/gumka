@@ -101,3 +101,63 @@ sha256 = "3536b71674dc706381f42833b55627fd3d1f2c1b68a365b49255284b4f7b55c7"
 path = "SAM2_1SmallMaskDecoderFLOAT16.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
 size = 10222400
 sha256 = "dbc4910c434fee657ed9f001da7abcb467d2a37ac235099c6aa47628b122ec4e"
+
+# Our own Core ML conversions of RealPLKSR (MSSIM pretrain), made by
+# tools/convert/realplksr/convert.py; docs/models.md has their provenance.
+[[models]]
+id = "realplksr-2x"
+tool = "Upscale"
+name = "RealPLKSR 2×"
+summary = "Twice the size, sharpening what is there without inventing detail"
+format = "Core ML · 512 → 1024"
+license = "MIT"
+copyright = ["Copyright (c) 2024 Dongheon Lee"]
+source = "gumka/realplksr-coreml"
+source_url = "https://huggingface.co/gumka/realplksr-coreml"
+platform = "macos"
+packages = ["RealPLKSR-2x.mlpackage"]
+base_url = "https://huggingface.co/gumka/realplksr-coreml/resolve/9ffab7865b92e4b3c8046011b2aaf3272b21166f/"
+
+[[models.files]]
+path = "RealPLKSR-2x.mlpackage/Manifest.json"
+size = 617
+sha256 = "2eb4c013878a40e9491ed55a72e23c5c28d9964e706185f95755cc2412a01703"
+
+[[models.files]]
+path = "RealPLKSR-2x.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 344036
+sha256 = "efac2ad7e5249eb31f2ebcee6182e1a6eb17dd1f6694efef31e6f43d50e375bc"
+
+[[models.files]]
+path = "RealPLKSR-2x.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 14771288
+sha256 = "929cfceaa7d06f78b2882f9e1a78266c6c72fca25426599da3440f1be4d8a1c2"
+
+[[models]]
+id = "realplksr-4x"
+tool = "Upscale"
+name = "RealPLKSR 4×"
+summary = "Four times the size, sharpening what is there without inventing detail"
+format = "Core ML · 512 → 2048"
+license = "MIT"
+copyright = ["Copyright (c) 2024 Dongheon Lee"]
+source = "gumka/realplksr-coreml"
+source_url = "https://huggingface.co/gumka/realplksr-coreml"
+platform = "macos"
+packages = ["RealPLKSR-4x.mlpackage"]
+base_url = "https://huggingface.co/gumka/realplksr-coreml/resolve/9ffab7865b92e4b3c8046011b2aaf3272b21166f/"
+
+[[models.files]]
+path = "RealPLKSR-4x.mlpackage/Manifest.json"
+size = 617
+sha256 = "94073179de762b0f3e1d28c4615d263e838847d0e391e19b60e682df2423c575"
+
+[[models.files]]
+path = "RealPLKSR-4x.mlpackage/Data/com.apple.CoreML/model.mlmodel"
+size = 344036
+sha256 = "922cb5784713bb01a1f1fc80e0f8a0e210ca506aae6df88f5931c0e769540f45"
+
+[[models.files]]
+path = "RealPLKSR-4x.mlpackage/Data/com.apple.CoreML/weights/weight.bin"
+size = 14812832
+sha256 = "da081b4a3aad61e6533f6a900155b3b583bb0433c8f8a0e719c3c649dee4a4ec"

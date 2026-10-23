@@ -36,7 +36,7 @@
   until it opens a file (`GumkaApp::sent`), and marks the document only if that file is the one
   sent (`Document::sent`); a sent file that fails to open doesn't mark the next one.
 - It saves in place and quits; macOS then brings back the app that sent the photo, which picks
-  up the saved file. Without unsaved changes it just quits. During an erase it waits for the
+  up the saved file. After an upscale that file is larger than the one sent. Without unsaved changes it just quits. During an erase it waits for the
   pixels, then saves and quits. A failed save says why and Gumka stays.
 - Saving as another file ends it: the button goes away, since the sending app waits for the
   original. While a save waits for the pixels the button is off, so a waiting Save As stays the

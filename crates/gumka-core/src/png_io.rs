@@ -217,6 +217,16 @@ fn metadata(info: &png::Info) -> Metadata {
     meta
 }
 
+/// A color premultiplied by `alpha` as a straight one, rounded; black where it is fully
+/// transparent.
+fn unpremultiply(color: [u16; 3], alpha: u16) -> [u16; 3] {
+    let a = u32::from(alpha);
+    if a == 0 {
+        return [0; 3];
+    }
+    color.map(|c| ((u32::from(c) * 65535 + a / 2) / a).min(65535) as u16)
+}
+
 /// Writes `image` as PNG, with as much of `meta` as PNG holds.
 pub(crate) fn write<W: Write>(out: W, image: &Image, meta: &Metadata) -> Result<()> {
     let (w, h) = image.pixels.dimensions();
@@ -240,7 +250,12 @@ pub(crate) fn write<W: Write>(out: W, image: &Image, meta: &Metadata) -> Result<
         info.source_chromaticities = meta.png.chromaticities;
     }
     let exif = match meta.exif.as_ref().map(Exif::to_blob) {
-        Some(Ok(blob)) => Some(blob),
+        Some(Ok(mut blob)) => {
+            if image.resized {
+                meta::set_pixel_dimensions(&mut blob, w, h);
+            }
+            Some(blob)
+        }
         Some(Err(e)) => {
             eprintln!("EXIF left out: {e}");
             None
@@ -284,11 +299,16 @@ pub(crate) fn write<W: Write>(out: W, image: &Image, meta: &Metadata) -> Result<
 
     let rgb = image.pixels.as_raw().as_chunks::<3>().0;
     let mut samples: Vec<u16> = Vec::with_capacity(rgb.len() * 4);
-    for (i, p) in rgb.iter().enumerate() {
+    for (i, &p) in rgb.iter().enumerate() {
+        // PNG's alpha is straight: premultiplied colors are divided by their alpha.
+        let p = match image.alpha {
+            Some(alpha) if image.associated_alpha => unpremultiply(p, alpha[i]),
+            _ => p,
+        };
         if image.gray {
-            samples.push(gray_value(*p));
+            samples.push(gray_value(p));
         } else {
-            samples.extend_from_slice(p);
+            samples.extend_from_slice(&p);
         }
         if let Some(alpha) = image.alpha {
             samples.push(alpha[i]);

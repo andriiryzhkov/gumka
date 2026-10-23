@@ -2,23 +2,29 @@
 
 # Gumka
 
-Extensible AI photo retouching. The first tool is an eraser: paint over an object and Gumka
-fills it in with [LaMa](https://github.com/advimman/lama), on your Mac, in 16 bits, keeping the
-file's color profile and metadata. Pixels outside the erased area stay bit-identical in TIFF and
-PNG; a JPEG is re-encoded when saved.
+Extensible AI photo retouching, on your Mac, in 16 bits, keeping the file's color profile and
+metadata:
+
+- **Erase:** paint over an object and Gumka fills it in with
+  [LaMa](https://github.com/advimman/lama). Pixels outside the erased area stay bit-identical in
+  TIFF and PNG; a JPEG is re-encoded when saved.
+- **Upscale:** make the photo 1.25× to 4× larger with
+  [RealPLKSR](https://github.com/dslisleedh/PLKSR), which sharpens what is there without
+  inventing detail. Undo brings back the original size.
 
 Early development: macOS 13 or later (Apple Silicon) only for now.
 
 ## Running from source
 
 Needs Rust (via [rustup](https://rustup.rs)). Models are not in git: download them once (about
-310 MB) with `cargo xtask models`, which reads [`models.toml`](models.toml) and checks every file.
+340 MB) with `cargo xtask models`, which reads [`models.toml`](models.toml) and checks every file.
 
 ```sh
 cargo xtask models                               # once, and after models.toml changes
 cargo run --release -p gumka-app                 # the app
 cargo run --release -p gumka-app -- photo.tif    # open a file directly
 cargo run --release -p gumka-cli -- erase in.tif mask.png out.tif
+cargo run --release -p gumka-cli -- upscale in.tif out.tif --scale 2
 cargo xtask bundle                               # Gumka.app and a disk image in target/bundle
 ```
 

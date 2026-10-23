@@ -53,6 +53,37 @@ A TIFF always states its resolution with a unit:
 
 pHYs (pixels per meter) is read back as whole dpi where it is one (11811 → 300).
 
+## Size changes
+
+After an upscale the picture is larger than the file it came from. The pixel layout of every
+format is written from the pixels, so it is always right. Of the metadata:
+- **EXIF's record of the size is rewritten when the size changed:** the EXIF directory's
+  PixelXDimension and PixelYDimension (40962, 40963), and in JPEG and PNG EXIF also the main
+  directory's width and length (256, 257).
+  - JPEG and PNG EXIF is patched in place, so the maker note's offsets stay valid. A value is
+    changed only where the tag holds one SHORT or LONG that the new value fits; a malformed
+    EXIF is left as it is.
+  - A picture whose size didn't change keeps EXIF's values as they were, even if they were
+    already wrong.
+- **The resolution is kept**, as Photoshop does when it resamples: 300 dpi stays 300 dpi and the
+  print size grows.
+- **Values that still describe the old size:**
+  - XMP's size fields (`tiff:ImageWidth`, `exif:PixelXDimension`);
+  - Photoshop resources that hold pixel positions (guides, slices).
+- **A TIFF can't go past 4 GB.** Saving one that would says to save as PNG instead.
+
+## Alpha
+
+- TIFF holds either kind of alpha: straight (unassociated, ExtraSamples 2) or premultiplied
+  (associated, ExtraSamples 1, or the older Matteing). A TIFF saved as TIFF keeps its kind and
+  its values as they are.
+- PNG holds straight alpha only. A premultiplied alpha is written straight: each color times
+  65535 over its alpha, rounded, at 16 bits before an 8-bit file's rounding; black where the
+  alpha is 0. Written as it is, its soft edges would come out dark.
+- JPEG has no alpha, and the stored colors are written. For premultiplied alpha that is the
+  picture over black, a sensible flattening; turning them straight would bring out colors
+  hidden under transparent pixels. A straight alpha's colors are written as they are too.
+
 ## Odd and malformed input
 
 Files are untrusted input: parsing must never panic, hang or allocate what a file merely claims.
@@ -80,5 +111,5 @@ an extra channel that isn't alpha are refused with a clear message, never silent
 - A maker note can break when EXIF is re-laid out (TIFF → anything, and JPEG/PNG → TIFF).
 - Maker-note previews and `xmp:Thumbnails` still hold the old picture.
 - XMP is copied untouched, so values describing the file (bit depth, compression, size) can go
-  stale; extended XMP stays JPEG-only.
+  stale, the size after an upscale included; extended XMP stays JPEG-only.
 - Premultiplied (associated) alpha is kept, but the erased area isn't premultiplied.

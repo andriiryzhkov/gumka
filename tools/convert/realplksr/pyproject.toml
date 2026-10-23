@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Converts the RealPLKSR upscalers to Core ML for Gumka. Not part of the app or its build:
+# run it by hand when the models change (see README.md).
+
+[project]
+name = "gumka-convert-realplksr"
+version = "1.0.0"
+description = "Converts the RealPLKSR 2x and 4x upscalers to Core ML for Gumka"
+requires-python = "==3.13.*"
+# coremltools 9.0 is tested with PyTorch 2.7.0; torchvision 0.22.0 is the matching release.
+dependencies = [
+    "coremltools==9.0",
+    "numpy==2.2.6",
+    "spandrel==0.4.2",
+    "torch==2.7.0",
+    "torchvision==0.22.0",
+]
+
+[tool.uv]
+package = false

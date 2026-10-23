@@ -15,7 +15,7 @@ use std::path::Path;
 use image::codecs::jpeg::{JpegEncoder, PixelDensity, PixelDensityUnit};
 use image::{DynamicImage, GrayImage, ImageEncoder, ImageFormat, RgbImage};
 
-use crate::meta::{self, Density, DensityUnit, Exif, Metadata};
+use crate::meta::{self, Density, DensityUnit, EXIF_DIRECTORY, Exif, Metadata};
 use crate::picture::{Decoded, Error, Image, Result, gray_value, to_u8};
 use crate::tiff_io;
 
@@ -39,9 +39,8 @@ const PHOTOSHOP_HEADER: &[u8] = b"Photoshop 3.0\0";
 /// The most a segment carries after its marker and length.
 const MAX_SEGMENT: usize = 65533;
 
-/// The EXIF tag of a maker note, and the EXIF directory's pointer.
+/// The EXIF tag of a maker note.
 const MAKER_NOTE: u16 = 37500;
-const EXIF_DIRECTORY: u16 = 34665;
 
 /// What only JPEG holds, kept for saving as JPEG again.
 #[derive(Default)]
@@ -202,7 +201,8 @@ pub(crate) fn write<W: Write>(mut out: W, image: &Image, meta: &Metadata) -> Res
     // Right after JFIF, before the encoder's ICC profile: EXIF (which readers expect first),
     // XMP, Photoshop resources (with IPTC) and comments.
     let mut segments: Vec<(u8, Vec<u8>)> = Vec::new();
-    if let Some(exif) = exif_segment(meta) {
+    let resized = image.resized.then_some((w, h));
+    if let Some(exif) = exif_segment(meta, resized) {
         segments.push((APP1, exif));
     }
     if let Some(xmp) = &meta.xmp {
@@ -229,10 +229,14 @@ pub(crate) fn write<W: Write>(mut out: W, image: &Image, meta: &Metadata) -> Res
 }
 
 /// The APP1 payload for `meta`'s EXIF, or `None` if there is none or it is too large even
-/// without its maker note (the usual reason for its size).
-fn exif_segment(meta: &Metadata) -> Option<Vec<u8>> {
+/// without its maker note (the usual reason for its size). `resized` is the new pixel size of
+/// a picture whose size changed.
+fn exif_segment(meta: &Metadata, resized: Option<(u32, u32)>) -> Option<Vec<u8>> {
     let exif = meta.exif.as_ref()?;
-    let segment = |blob: Vec<u8>| {
+    let segment = |mut blob: Vec<u8>| {
+        if let Some((w, h)) = resized {
+            meta::set_pixel_dimensions(&mut blob, w, h);
+        }
         (EXIF_HEADER.len() + blob.len() <= MAX_SEGMENT).then(|| [EXIF_HEADER, &blob].concat())
     };
     match exif.to_blob() {

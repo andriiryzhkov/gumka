@@ -14,7 +14,7 @@ use tiff::encoder::{Rational, TiffEncoder, colortype};
 use tiff::tags::{ResolutionUnit, Tag, Type, ValueBuffer};
 
 use crate::Rgb16;
-use crate::meta::{Density, DensityUnit, encode_raw_profile};
+use crate::meta::{Density, DensityUnit, EXIF_DIRECTORY, encode_raw_profile};
 use crate::picture::Picture;
 use crate::tiff_io::TagDirectory;
 
@@ -28,7 +28,6 @@ const THUMBNAIL: &[u8] = b"OLD-THUMBNAIL-OLD-THUMBNAIL";
 const RESOLUTION_INFO: &[u8] = &[0, 0x2C, 0, 0, 0, 1, 0, 1, 0, 0x2C, 0, 0, 0, 1, 0, 1];
 const DATE: &str = "2026:10:19 12:00:00";
 
-const EXIF_DIRECTORY: u16 = 34665;
 const GPS_DIRECTORY: u16 = 34853;
 
 fn test_dir(name: &str) -> PathBuf {
@@ -1161,32 +1160,78 @@ fn broken_metadata_never_stops_an_open_or_a_save() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A `width` × `height` TIFF whose alpha is associated, said with Matteing (32995), the
+/// obsolete form of ExtraSamples.
+fn matteing_tiff<C: colortype::ColorType>(path: &Path, width: u32, height: u32, data: &[C::Inner])
+where
+    [C::Inner]: tiff::encoder::TiffValue,
+{
+    {
+        let mut encoder = TiffEncoder::new(BufWriter::new(File::create(path).unwrap())).unwrap();
+        let mut image = encoder.new_image::<C>(width, height).unwrap();
+        image
+            .encoder()
+            .write_tag(Tag::Unknown(32995), 1u16)
+            .unwrap();
+        image.write_data(data).unwrap();
+    }
+    // If the encoder also wrote ExtraSamples, hide it (tag 338 renamed to a private 65000).
+    let mut bytes = fs::read(path).unwrap();
+    if let Some(at) = bytes.windows(4).position(|w| w == [0x52, 0x01, 3, 0]) {
+        bytes[at..at + 2].copy_from_slice(&65000u16.to_le_bytes());
+        fs::write(path, &bytes).unwrap();
+    }
+}
+
 /// TIFF 32995 (Matteing, the obsolete form of ExtraSamples) means associated alpha.
 #[test]
 fn matteing_means_associated_alpha() {
     let dir = test_dir("matteing");
     let source = dir.join("matteing.tif");
-    {
-        let mut encoder = TiffEncoder::new(BufWriter::new(File::create(&source).unwrap())).unwrap();
-        let mut image = encoder.new_image::<colortype::RGBA8>(2, 1).unwrap();
-        // Drop the ExtraSamples the encoder writes and say Matteing instead.
-        image
-            .encoder()
-            .write_tag(Tag::Unknown(32995), 1u16)
-            .unwrap();
-        image.write_data(&[10, 20, 30, 128, 1, 2, 3, 255]).unwrap();
-    }
-    // If the encoder also wrote ExtraSamples, hide it (tag 338 renamed to a private 65000).
-    let mut bytes = fs::read(&source).unwrap();
-    if let Some(at) = bytes.windows(4).position(|w| w == [0x52, 0x01, 3, 0]) {
-        bytes[at..at + 2].copy_from_slice(&65000u16.to_le_bytes());
-        fs::write(&source, &bytes).unwrap();
-    }
+    matteing_tiff::<colortype::RGBA8>(&source, 2, 1, &[10, 20, 30, 128, 1, 2, 3, 255]);
     let out = dir.join("out.tif");
-    Picture::open(&source).unwrap().save(&out).unwrap();
+    let picture = Picture::open(&source).unwrap();
+    assert!(picture.associated_alpha());
+    picture.save(&out).unwrap();
     let mut decoder = Decoder::new(BufReader::new(File::open(&out).unwrap())).unwrap();
     let extra: Vec<u16> = decoder.get_tag_u16_vec(Tag::ExtraSamples).unwrap();
     assert_eq!(extra, [1], "associated alpha, as Matteing said");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// PNG has straight alpha only, so an associated alpha's colors are divided by it on the way;
+/// fully transparent pixels become black (review round 2: they were written premultiplied, and
+/// soft edges came out dark). A TIFF keeps the colors as they are, still associated.
+#[test]
+fn an_associated_alpha_is_saved_straight_in_a_png() {
+    let dir = test_dir("associated-png");
+    let source = dir.join("associated.tif");
+    let rgba = [10000, 20000, 30000, 40000, 1, 2, 3, 65535, 500, 600, 700, 0];
+    matteing_tiff::<colortype::RGBA16>(&source, 3, 1, &rgba);
+    let picture = Picture::open(&source).unwrap();
+    assert!(picture.associated_alpha());
+    let png = dir.join("straight.png");
+    picture.save(&png).unwrap();
+    let straight = image::open(&png).unwrap().into_rgba16();
+    assert_eq!(
+        straight.as_raw(),
+        &[16384, 32768, 49151, 40000, 1, 2, 3, 65535, 0, 0, 0, 0]
+    );
+    assert!(!Picture::open(&png).unwrap().associated_alpha());
+
+    let tif = dir.join("again.tif");
+    picture.save(&tif).unwrap();
+    let again = Picture::open(&tif).unwrap();
+    assert!(again.associated_alpha());
+    assert_eq!(again.pixels, picture.pixels, "bit-identical");
+    assert_eq!(again.alpha(), picture.alpha());
+
+    // At 8 bits: 10 under an alpha of 128 is 20 straight.
+    let source = dir.join("associated-8.tif");
+    matteing_tiff::<colortype::RGBA8>(&source, 2, 1, &[10, 20, 30, 128, 1, 2, 3, 255]);
+    Picture::open(&source).unwrap().save(&png).unwrap();
+    let straight = image::open(&png).unwrap().into_rgba8();
+    assert_eq!(straight.as_raw(), &[20, 40, 60, 128, 1, 2, 3, 255]);
     fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -1640,5 +1685,114 @@ fn a_planar_tiff_is_refused_clearly() {
     fs::write(&path, file).unwrap();
     let error = Picture::open(&path).err().expect("refused").to_string();
     assert!(error.contains("planar TIFFs"), "{error}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// EXIF's record of the pixel size (40962, 40963) in the file at `path`.
+fn exif_size(path: &Path) -> (u64, u64) {
+    let picture = Picture::open(path).unwrap();
+    let tags = picture.meta().exif.as_ref().unwrap().to_tags().unwrap();
+    let exif = child(&tags, EXIF_DIRECTORY);
+    let number = |tag| {
+        let v = exif.get(tag).unwrap();
+        match v.ty {
+            Type::SHORT => u64::from(u16::from_ne_bytes([v.bytes[0], v.bytes[1]])),
+            _ => u64::from(u32::from_ne_bytes(v.bytes[..4].try_into().unwrap())),
+        }
+    };
+    (number(40962), number(40963))
+}
+
+/// A picture that changes size says so in its EXIF in every format, through EXIF kept as tags
+/// (from a TIFF) and as bytes (from a PNG); one that doesn't keeps EXIF's values as they were.
+#[test]
+fn a_resized_picture_saves_its_new_size_in_exif() {
+    let dir = test_dir("resized");
+    let tif = dir.join("source.tif");
+    // A size the file doesn't have, as a camera's EXIF says after a crop elsewhere.
+    let sizes = [
+        (40962, Type::SHORT, 37u16.to_ne_bytes().to_vec()),
+        (40963, Type::LONG, 23u32.to_ne_bytes().to_vec()),
+    ];
+    rich_tiff(&tif, &pixels(30, 20), &sizes);
+    for ext in ["tif", "png", "jpg"] {
+        let out = dir.join(format!("kept.{ext}"));
+        Picture::open(&tif).unwrap().save(&out).unwrap();
+        assert_eq!(
+            exif_size(&out),
+            (37, 23),
+            "{ext}: not resized, kept as it was"
+        );
+    }
+
+    let bigger = pixels(60, 40);
+    let mut picture = Picture::open(&tif).unwrap();
+    picture.swap_pixels(&mut bigger.clone(), &mut None).unwrap();
+    for ext in ["tif", "png", "jpg"] {
+        let out = dir.join(format!("bigger.{ext}"));
+        picture.save(&out).unwrap();
+        assert_eq!(exif_size(&out), (60, 40), "{ext}");
+        check_rich(&out, true);
+        if ext != "jpg" {
+            assert_eq!(Picture::open(&out).unwrap().pixels, bigger, "{ext}");
+        }
+    }
+
+    let mut picture = Picture::open(&dir.join("bigger.png")).unwrap();
+    picture
+        .swap_pixels(&mut pixels(120, 80), &mut None)
+        .unwrap();
+    let out = dir.join("again.jpg");
+    picture.save(&out).unwrap();
+    assert_eq!(exif_size(&out), (120, 80), "EXIF bytes from a PNG");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn pixels_of_another_size_bring_an_alpha_to_match() {
+    let dir = test_dir("resized-alpha");
+    let source = dir.join("rgba.png");
+    let rgba = image::ImageBuffer::<image::Rgba<u16>, _>::from_fn(6, 4, |x, y| {
+        image::Rgba([
+            x as u16 * 9000,
+            y as u16 * 9000,
+            500,
+            60000 - x as u16 * 1000,
+        ])
+    });
+    rgba.save(&source).unwrap();
+    let mut picture = Picture::open(&source).unwrap();
+    assert_eq!(picture.alpha().map(<[u16]>::len), Some(24));
+
+    // Refused, changing nothing on either side: no alpha, or one of the old size.
+    let mut new = pixels(12, 8);
+    assert!(picture.swap_pixels(&mut new, &mut None).is_err());
+    let mut short = Some(vec![0; 24]);
+    assert!(picture.swap_pixels(&mut new, &mut short).is_err());
+    assert_eq!(picture.pixels.dimensions(), (6, 4));
+    assert_eq!(new.dimensions(), (12, 8));
+    assert_eq!(short.map(|a| a.len()), Some(24));
+
+    let alpha: Vec<u16> = (0..96).map(|i| i * 600).collect();
+    let mut old_alpha = Some(alpha.clone());
+    picture.swap_pixels(&mut new, &mut old_alpha).unwrap();
+    assert_eq!(new.dimensions(), (6, 4), "the old pixels come back");
+    assert_eq!(old_alpha.map(|a| a.len()), Some(24));
+    for ext in ["png", "tif"] {
+        let out = dir.join(format!("bigger.{ext}"));
+        picture.save(&out).unwrap();
+        let back = Picture::open(&out).unwrap();
+        assert_eq!(back.pixels, pixels(12, 8), "{ext}");
+        assert_eq!(back.alpha(), Some(&alpha[..]), "{ext}");
+    }
+
+    // A picture without alpha takes none.
+    let mut plain = Picture::from_pixels(pixels(3, 3), 16);
+    assert!(
+        plain
+            .swap_pixels(&mut pixels(6, 6), &mut Some(vec![0; 36]))
+            .is_err()
+    );
+    assert!(plain.swap_pixels(&mut pixels(6, 6), &mut None).is_ok());
     fs::remove_dir_all(&dir).unwrap();
 }

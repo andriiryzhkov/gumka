@@ -46,9 +46,20 @@ Linear and very wide pictures are different (`color::ModelSpace`):
   never converted, and the feathered band is blended in the picture's own encoding.
 - The conversion is unoptimized (lcms2's optimization loses linear and gray shadows), and it must
   give back a few neutrals and mild colors within 2%. A profile that can't convert both ways, or
-  fails that check, keeps its values as they are, with one log line per profile.
+  fails that check, keeps its values as they are, with one log line per profile. Unoptimized
+  costs more per pixel, so large conversions (Upscale's tiles, at the model's output size too)
+  are split over the cores by rows.
 - Colors outside P3 are clipped in what the model sees, so a fill next to them can come back
   slightly less saturated.
+- Upscale converts every tile, so for these profiles colors outside P3 are clipped across the
+  whole photo, not only near a fill. Keeping them is a later step: a residual split, or soft
+  clipping that can be undone (ITU-R BT.2407, Annex 5).
+- The Upscale inspector says that colors beyond P3 may be clipped
+  (`color::may_clip_beyond_p3`) when the profile is converted and its primaries are wider than
+  P3, or can't be told: a linear profile that converts through a table (a camera profile) is
+  judged by its curve only, so its gamut is unknown. A linear matrix profile that P3 holds
+  (linear sRGB) and gray lose nothing, and a profile that fails the round trip isn't converted
+  at all. The app works this out the first time the inspector shows, once per photo.
 - Of the 1,560 profiles Capture One ships, only ROMM (ProPhoto) and Phase One's linear gray are
   converted; its camera profiles are tables and keep their values.
 - Cloud APIs (later) assume 8-bit sRGB: convert the crop to sRGB properly for them.

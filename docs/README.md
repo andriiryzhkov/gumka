@@ -13,6 +13,7 @@ start with [AGENTS.md](../AGENTS.md). The user-facing introduction is the top-le
 | [image-io.md](image-io.md) | File formats and metadata: what is kept, dropped or refused |
 | [color.md](color.md) | Color-managed display, and the color space the models see |
 | [erase-pipeline.md](erase-pipeline.md) | The erase pipeline, step by step |
+| [upscale-pipeline.md](upscale-pipeline.md) | The upscale pipeline: tiles, limits, speed |
 | [inference.md](inference.md) | The Core ML backend, the compiled-model cache, later backends |
 | [models.md](models.md) | The model registry, each model's provenance, inputs and outputs, licenses |
 | [ui.md](ui.md) | UI design and the logo |

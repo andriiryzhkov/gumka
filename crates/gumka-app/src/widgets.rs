@@ -214,6 +214,34 @@ pub fn slider_row(
     .inner
 }
 
+/// A label with `text` (the value as people write it) on the right, over a full-width slider
+/// of whole steps.
+pub fn step_slider_row(
+    ui: &mut Ui,
+    label: &str,
+    text: &str,
+    value: &mut u32,
+    range: RangeInclusive<u32>,
+) -> Response {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(label).size(12.0).color(TEXT_LABEL));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(text).font(mono(12.0)).color(TEXT));
+            });
+        });
+        ui.spacing_mut().slider_width = ui.available_width();
+        ui.spacing_mut().interact_size.y = 16.0;
+        ui.add(
+            egui::Slider::new(value, range)
+                .show_value(false)
+                .handle_shape(egui::style::HandleShape::Circle),
+        )
+    })
+    .inner
+}
+
 /// A row of mutually exclusive options. Returns the newly picked index.
 pub fn segmented(
     ui: &mut Ui,
