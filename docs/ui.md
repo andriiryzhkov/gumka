@@ -8,6 +8,11 @@
   object), undo/redo, before/after, zoom, and "Save & Return" for a photo another app sent
   ([opening-and-saving.md](opening-and-saving.md#save--return)); left tool rail (Erase,
   Upscale; Extend later); viewer; right inspector; status bar.
+- The title bar is the system's, except on Wayland desktops that leave it to apps (GNOME):
+  there winit draws one in GNOME's Adwaita style (its `wayland-csd-adwaita` feature), close to
+  GTK's but not following the theme or the button layout exactly.
+- A model found complete reads "Included" on macOS, where models come with the app, and
+  "Downloaded" elsewhere (`worker::FOUND`).
 - Every tool uses the same inspector, driven by the tool's declaration: name and input (mask,
   mask + prompt, canvas, whole image), collapsible setting sections, a Model section with "Runs
   on: This Mac | API" (API only for models too large to bundle), history, and one primary

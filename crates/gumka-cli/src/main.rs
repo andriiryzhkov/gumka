@@ -17,9 +17,15 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use gumka_core::Mask;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use gumka_core::erase::Inpainter;
 use gumka_core::image::{DynamicImage, ImageFormat, ImageReader, Luma};
 use gumka_core::picture::Picture;
 use gumka_core::select::Click;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use gumka_core::select::{Segmenter, mask_from_scores, model_input, to_input};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use gumka_core::upscale::{Alpha, Upscaler};
 use gumka_core::upscale::{Factor, largest_factor, result_size};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -39,8 +45,16 @@ const USAGE: &str = "usage: gumka-cli erase IN MASK OUT [--units cpu|gpu|ane|all
   --scale    how many times larger: 1.25 to 4 in steps of 0.25. 2 and 4 are the models' own
              output; others are made with the next one up and scaled down. The result may be
              at most 256 MP and 65,535 px a side.
-  --units    where the model runs. RealPLKSR (upscale) gives wrong results on the Neural
-             Engine, so it takes cpu or gpu only.";
+  --units    where the model runs, on macOS (Core ML). RealPLKSR (upscale) gives wrong
+             results on the Neural Engine, so it takes cpu or gpu only. On Linux models run
+             on the CPU with ONNX Runtime, so only cpu is taken.";
+
+/// Where models run unless `--units` says otherwise.
+const DEFAULT_UNITS: &str = if cfg!(target_os = "macos") {
+    "gpu"
+} else {
+    "cpu"
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -64,7 +78,7 @@ fn run() -> Result<()> {
     };
     let mut paths = Vec::new();
     let mut clicks = Vec::new();
-    let mut units = "gpu".to_string();
+    let mut units = DEFAULT_UNITS.to_string();
     let mut factor = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -151,6 +165,7 @@ fn scale(value: &str) -> Result<Factor> {
 
 /// `--units` names compute units there are; `upscale` refuses the Neural Engine, where RealPLKSR
 /// gives wrong results.
+#[cfg(target_os = "macos")]
 fn check_units(command: &str, units: &str) -> Result<()> {
     let upscale = command == "upscale";
     match units {
@@ -162,6 +177,25 @@ fn check_units(command: &str, units: &str) -> Result<()> {
         other if upscale => Err(format!("--units takes cpu or gpu, not {other:?}").into()),
         other => Err(format!("--units takes cpu, gpu, ane or all, not {other:?}").into()),
     }
+}
+
+/// On Linux ONNX Runtime runs the models on the CPU, so `--units` can only say so.
+#[cfg(target_os = "linux")]
+fn check_units(_: &str, units: &str) -> Result<()> {
+    match units {
+        "cpu" => Ok(()),
+        other => Err(format!(
+            "--units takes only cpu here, where ONNX Runtime runs the models on the CPU, not \
+             {other:?}"
+        )
+        .into()),
+    }
+}
+
+/// No backend here yet: the command is refused whatever `--units` says.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn check_units(_: &str, _: &str) -> Result<()> {
+    Ok(())
 }
 
 /// A picture of `size` must stay within the result's limits at `factor`. Too large, it says to
@@ -234,6 +268,97 @@ fn orientation_name(orientation: u8) -> &'static str {
     }
 }
 
+/// Erases what `mask` marks with `model`, and says what changed.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn erase(picture: &mut Picture, mask: &Mask, model: &mut dyn Inpainter) -> Result<()> {
+    let t = Instant::now();
+    let profile = picture.icc_profile().map(<[u8]>::to_vec);
+    match gumka_core::erase::erase(
+        &mut picture.pixels,
+        mask,
+        model,
+        &gumka_core::erase::EraseSettings::default(),
+        profile.as_deref(),
+    )? {
+        Some(gumka_core::erase::Patch { rect, .. }) => println!(
+            "erased: changed {}x{} at ({}, {}) ({:.2}s)",
+            rect.width,
+            rect.height,
+            rect.x,
+            rect.y,
+            t.elapsed().as_secs_f64()
+        ),
+        None => println!("mask is empty; nothing to erase"),
+    }
+    Ok(())
+}
+
+/// Upscales the picture by `factor` with `model`, showing progress.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn upscale(picture: &mut Picture, factor: Factor, model: &mut dyn Upscaler) -> Result<()> {
+    let (w, h) = (picture.width(), picture.height());
+    let t = Instant::now();
+    let profile = picture.icc_profile().map(<[u8]>::to_vec);
+    let mut shown = 0;
+    let alpha = picture.alpha().map(|values| Alpha {
+        values,
+        premultiplied: picture.associated_alpha(),
+    });
+    let result = gumka_core::upscale::upscale(
+        &picture.pixels,
+        alpha,
+        factor,
+        model,
+        profile.as_deref(),
+        &mut |done, total| {
+            let tenths = done * 10 / total.max(1);
+            if tenths > shown {
+                shown = tenths;
+                eprintln!("{}% ({done} of {total} tiles)", tenths * 10);
+            }
+            true
+        },
+    )?
+    .ok_or("stopped")?;
+    let (rw, rh) = result.pixels.dimensions();
+    let (mut pixels, mut alpha) = (result.pixels, result.alpha);
+    picture.swap_pixels(&mut pixels, &mut alpha)?;
+    println!(
+        "upscaled {w}x{h} to {rw}x{rh} ({:.1}s)",
+        t.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+/// A selection needs a click on the object, before any model loads.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn check_clicks(clicks: &[Click]) -> Result<()> {
+    if clicks.iter().any(|c| c.include) {
+        Ok(())
+    } else {
+        Err(format!("select needs at least one --click\n\n{USAGE}").into())
+    }
+}
+
+/// Selects the object under the clicks with `model`, and says how much of the picture it is.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn select(picture: &Picture, clicks: &[Click], model: &mut dyn Segmenter) -> Result<Mask> {
+    let size = model.input_size();
+    let t = Instant::now();
+    model.set_image(&model_input(&picture.pixels, size))?;
+    println!("image encoded ({:.2}s)", t.elapsed().as_secs_f64());
+    let t = Instant::now();
+    let scores = model.segment(&to_input(clicks, picture.pixels.dimensions(), size))?;
+    println!("selected ({:.3}s)", t.elapsed().as_secs_f64());
+    let mask = mask_from_scores(&scores, picture.pixels.dimensions());
+    let selected = mask.pixels().filter(|p| p.0[0] != 0).count();
+    println!(
+        "{selected} pixels selected ({:.1}% of the picture)",
+        100.0 * selected as f64 / mask.len() as f64
+    );
+    Ok(mask)
+}
+
 #[cfg(target_os = "macos")]
 mod backend {
     use std::time::Instant;
@@ -241,7 +366,7 @@ mod backend {
     use gumka_core::Mask;
     use gumka_core::picture::Picture;
     use gumka_core::select::Click;
-    use gumka_core::upscale::{Alpha, Factor};
+    use gumka_core::upscale::Factor;
     use gumka_infer::coreml::ComputeUnits;
     use gumka_infer::{CoreMlLama, CoreMlSam, CoreMlUpscaler, models};
 
@@ -262,97 +387,67 @@ mod backend {
         let package = models::model(models::LAMA)?.find_packages()?.remove(0);
         let mut lama = CoreMlLama::load(&package, &models::cache_dir(), units(unit_name)?)?;
         println!("model loaded ({:.2}s)", t.elapsed().as_secs_f64());
-
-        let t = Instant::now();
-        let profile = picture.icc_profile().map(<[u8]>::to_vec);
-        match gumka_core::erase::erase(
-            &mut picture.pixels,
-            mask,
-            &mut lama,
-            &gumka_core::erase::EraseSettings::default(),
-            profile.as_deref(),
-        )? {
-            Some(gumka_core::erase::Patch { rect, .. }) => println!(
-                "erased: changed {}x{} at ({}, {}) ({:.2}s)",
-                rect.width,
-                rect.height,
-                rect.x,
-                rect.y,
-                t.elapsed().as_secs_f64()
-            ),
-            None => println!("mask is empty; nothing to erase"),
-        }
-        Ok(())
+        super::erase(picture, mask, &mut lama)
     }
 
     pub fn upscale(picture: &mut Picture, factor: Factor, unit_name: &str) -> Result<()> {
-        let (w, h) = (picture.width(), picture.height());
         let t = Instant::now();
         let scale = factor.model_scale();
         let mut model = CoreMlUpscaler::load(scale, &models::cache_dir(), units(unit_name)?)?;
         let name = &models::model(models::upscaler_id(scale)?)?.name;
         println!("{name} loaded ({:.2}s)", t.elapsed().as_secs_f64());
-
-        let t = Instant::now();
-        let profile = picture.icc_profile().map(<[u8]>::to_vec);
-        let mut shown = 0;
-        let alpha = picture.alpha().map(|values| Alpha {
-            values,
-            premultiplied: picture.associated_alpha(),
-        });
-        let result = gumka_core::upscale::upscale(
-            &picture.pixels,
-            alpha,
-            factor,
-            &mut model,
-            profile.as_deref(),
-            &mut |done, total| {
-                let tenths = done * 10 / total.max(1);
-                if tenths > shown {
-                    shown = tenths;
-                    eprintln!("{}% ({done} of {total} tiles)", tenths * 10);
-                }
-                true
-            },
-        )?
-        .ok_or("stopped")?;
-        let (rw, rh) = result.pixels.dimensions();
-        let (mut pixels, mut alpha) = (result.pixels, result.alpha);
-        picture.swap_pixels(&mut pixels, &mut alpha)?;
-        println!(
-            "upscaled {w}x{h} to {rw}x{rh} ({:.1}s)",
-            t.elapsed().as_secs_f64()
-        );
-        Ok(())
+        super::upscale(picture, factor, &mut model)
     }
 
     pub fn select(picture: &Picture, clicks: &[Click], unit_name: &str) -> Result<Mask> {
-        if !clicks.iter().any(|c| c.include) {
-            return Err(format!("select needs at least one --click\n\n{USAGE}").into());
-        }
+        super::check_clicks(clicks)?;
         let t = Instant::now();
         let mut sam = CoreMlSam::load(&models::cache_dir(), units(unit_name)?)?;
         println!("SAM loaded ({:.2}s)", t.elapsed().as_secs_f64());
-
-        use gumka_core::select::{Segmenter, mask_from_scores, model_input, to_input};
-        let size = sam.input_size();
-        let t = Instant::now();
-        sam.set_image(&model_input(&picture.pixels, size))?;
-        println!("image encoded ({:.2}s)", t.elapsed().as_secs_f64());
-        let t = Instant::now();
-        let scores = sam.segment(&to_input(clicks, picture.pixels.dimensions(), size))?;
-        println!("selected ({:.3}s)", t.elapsed().as_secs_f64());
-        let mask = mask_from_scores(&scores, picture.pixels.dimensions());
-        let selected = mask.pixels().filter(|p| p.0[0] != 0).count();
-        println!(
-            "{selected} pixels selected ({:.1}% of the picture)",
-            100.0 * selected as f64 / mask.len() as f64
-        );
-        Ok(mask)
+        super::select(picture, clicks, &mut sam)
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod backend {
+    use std::time::Instant;
+
+    use gumka_core::Mask;
+    use gumka_core::picture::Picture;
+    use gumka_core::select::Click;
+    use gumka_core::upscale::Factor;
+    use gumka_infer::models;
+    use gumka_infer::onnx::{OnnxLama, OnnxSam, OnnxUpscaler};
+
+    use super::Result;
+
+    pub fn erase(picture: &mut Picture, mask: &Mask, _: &str) -> Result<()> {
+        let t = Instant::now();
+        let package = models::model(models::LAMA)?.find_packages()?.remove(0);
+        let mut lama = OnnxLama::load(&package)?;
+        println!("model loaded ({:.2}s)", t.elapsed().as_secs_f64());
+        super::erase(picture, mask, &mut lama)
+    }
+
+    pub fn upscale(picture: &mut Picture, factor: Factor, _: &str) -> Result<()> {
+        let t = Instant::now();
+        let scale = factor.model_scale();
+        let mut model = OnnxUpscaler::load(scale)?;
+        let name = &models::model(models::upscaler_id(scale)?)?.name;
+        println!("{name} loaded ({:.2}s)", t.elapsed().as_secs_f64());
+        super::upscale(picture, factor, &mut model)
+    }
+
+    pub fn select(picture: &Picture, clicks: &[Click], _: &str) -> Result<Mask> {
+        super::check_clicks(clicks)?;
+        let t = Instant::now();
+        let mut sam = OnnxSam::load()?;
+        println!("SAM loaded ({:.2}s)", t.elapsed().as_secs_f64());
+        super::select(picture, clicks, &mut sam)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod backend {
     use gumka_core::Mask;
     use gumka_core::picture::Picture;
@@ -361,7 +456,8 @@ mod backend {
 
     use super::Result;
 
-    const NONE: &str = "no inference backend on this platform yet (Core ML only, macOS)";
+    const NONE: &str = "no inference backend on this platform yet (Core ML on macOS, ONNX \
+                        Runtime on Linux)";
 
     pub fn erase(_: &mut Picture, _: &Mask, _: &str) -> Result<()> {
         Err(NONE.into())
@@ -428,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn upscale_refuses_the_neural_engine() {
         for units in ["ane", "all"] {
             let error = check_units("upscale", units).unwrap_err().to_string();
@@ -444,6 +541,7 @@ mod tests {
 
     /// An unknown unit gets an error that names it, not the whole usage.
     #[test]
+    #[cfg(target_os = "macos")]
     fn unknown_units_are_named() {
         let error = |command| check_units(command, "bogus").unwrap_err().to_string();
         assert_eq!(
@@ -451,6 +549,22 @@ mod tests {
             "--units takes cpu, gpu, ane or all, not \"bogus\""
         );
         assert_eq!(error("upscale"), "--units takes cpu or gpu, not \"bogus\"");
+    }
+
+    /// ONNX Runtime runs on the CPU: that is the default and the only unit taken.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_the_cpu_is_taken_on_linux() {
+        assert_eq!(DEFAULT_UNITS, "cpu");
+        for command in ["erase", "select", "upscale"] {
+            assert!(check_units(command, "cpu").is_ok());
+            let error = check_units(command, "gpu").unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "--units takes only cpu here, where ONNX Runtime runs the models on the CPU, \
+                 not \"gpu\""
+            );
+        }
     }
 
     #[test]

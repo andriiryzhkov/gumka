@@ -11,7 +11,11 @@
   already in the environment wins); the app bundle's Info.plist must say the same
   (`LSMinimumSystemVersion` 13.0).
 - Xcode is not needed: Core ML compiles models at runtime.
-- Windows and Linux build and must keep building, but have no model backend yet.
+- Linux: the models run on ONNX Runtime 1.17 or later, the system's, opened when the first
+  model loads (`libonnxruntime`; on Ubuntu 26.04, `sudo apt install libonnxruntime1.23`). Set
+  `ORT_DYLIB_PATH` to use another build. Building needs no ONNX Runtime
+  ([inference.md](inference.md#onnx-runtime-linux)).
+- Windows builds and must keep building, but has no model backend yet.
 
 ## Models
 
@@ -25,10 +29,13 @@ cargo xtask models --check   # only check
 model's provenance. Adding a model is an entry in `models.toml`, plus code only if it needs a new
 adapter.
 
+Only this platform's models are downloaded: Core ML on macOS (about 340 MB), ONNX on Linux
+(about 450 MB, each model in a folder of its own, such as `models/LaMa-ONNX`).
+
 Models are looked up, in order, in `$GUMKA_MODELS`, the app bundle's
 `Contents/Resources/models` (when running from one; the packages there are compiled),
 `./models`, the repository's `models/`, then `~/Library/Application Support/Gumka/models`
-(`gumka-infer/src/models.rs`):
+(`~/.local/share/gumka/models` on Linux) (`gumka-infer/src/models.rs`):
 
 - A folder counts only if it holds every file `models.toml` lists, each at the listed size (no
   SHA-256 at startup; `cargo xtask models --check` is the full check). Incomplete copies are
@@ -113,8 +120,9 @@ LCMS2_LIB_DIR=/tmp/fake-lcms cargo clippy --workspace --all-targets \
   - `gumka-app/src/app.rs` tests: a headless harness that runs the app's `logic` and `ui` with a
     fake worker (`eframe::Frame::_new_kittest()`); file panels go through a `panels` seam that
     only counts calls under `cfg(test)`, so no test can open a real panel.
-- Tests must not need the downloaded models or Core ML. A test that does is `#[ignore]` and runs
-  with `cargo test -p gumka-infer -- --ignored`. The compiled-model cache protocol is tested
+- Tests must not need the downloaded models, Core ML or ONNX Runtime. A test that does is
+  `#[ignore]` and runs with `cargo test -p gumka-infer -- --ignored` (on Linux, against the
+  system's ONNX Runtime; `--release` makes it several times faster). The compiled-model cache protocol is tested
   with stand-in compile and load closures.
 - What must stay covered everywhere: pixels outside the mask bit-identical; color and ICC round
   trips; metadata preservation across formats; parsers that never panic, hang or over-allocate

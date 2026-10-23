@@ -14,6 +14,13 @@ The app builds the registry in (`gumka_infer::models::registry()`) for the Model
 find packages ([development.md](development.md#models) has the search folders). Adding a model is
 an entry in `models.toml`, plus code only if it needs a new adapter.
 
+Each entry names its `platform`: `macos` for Core ML, `linux` for ONNX. An id has at most one
+entry per platform; the app asks for this platform's (`models::model`), and the Models page and
+`cargo xtask models` list only this platform's (`--all` downloads every one). An entry with a
+`dir` keeps its files in that folder of a models directory (the ONNX models, whose file names
+are generic); its `packages` and file paths are relative to it. An ONNX package's weights may sit
+beside it as `<package>_data`.
+
 ## Rules
 
 - Every model must have a license compatible with GPL-3.0-or-later that allows commercial use.
@@ -35,6 +42,9 @@ an entry in `models.toml`, plus code only if it needs a new adapter.
 | LaMa (Big LaMa) | Erase | Core ML `.mlpackage` | [mlboydaisuke/LaMa-CoreML](https://huggingface.co/mlboydaisuke/LaMa-CoreML) | Apache-2.0 |
 | SAM 2.1 Small | Select object | Core ML, 3 × `.mlpackage` | [apple/coreml-sam2.1-small](https://huggingface.co/apple/coreml-sam2.1-small) | Apache-2.0 |
 | RealPLKSR 2× and 4× | Upscale | Core ML `.mlpackage` each, our conversion | [gumka/realplksr-coreml](https://huggingface.co/gumka/realplksr-coreml), from dslisleedh/PLKSR (weights by neosr-project) | MIT |
+| LaMa (Big LaMa), Linux | Erase | ONNX | [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX) | Apache-2.0 |
+| SAM 2.1 Small, Linux | Select object | ONNX, 2 models with external weights | [onnx-community/sam2.1-hiera-small-ONNX](https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX) | Apache-2.0 (upstream's; the repository states none) |
+| RealPLKSR 2× and 4×, Linux | Upscale | ONNX | [darktable-org/upscale-realplksr-onnx](https://huggingface.co/darktable-org/upscale-realplksr-onnx) | MIT |
 
 LaMa and SAM 2 are Apache 2.0, RealPLKSR is MIT; all are compatible with GPL-3.0. MIT names its
 copyright holder, so the registry's `copyright` lines go into the bundled notice before the text.
@@ -95,6 +105,40 @@ copyright holder, so the registry's `copyright` lines go into the bundled notice
 - About 1.3 s (2×) and 1.5 s (4×) per tile on an M4: about 15 MFLOP per input pixel, so a 24 MP
   photo takes 2 to 3 minutes.
 
+## LaMa (ONNX, Linux)
+
+- Carve's export of Big LaMa (`lama_fp32.onnx`), Apache-2.0, with the Fourier convolutions
+  rewritten so that it exports; darktable uses the same file.
+- Inputs: `image` float32 [1, 3, 512, 512], RGB from 0 to 1; `mask` float32 [1, 1, 512, 512],
+  1 fills. Output: `output` float32 [1, 3, 512, 512] from 0 to 255, already joined to the input
+  outside the mask. The adapter rounds it to 8 bits, like Core ML's output, before the pipeline
+  blends it in.
+
+## SAM 2.1 Small (ONNX, Linux)
+
+- onnx-community's export (Transformers.js layout), fp32, pinned by revision. The repository
+  states no license and has no model card; the weights are Meta's SAM 2.1 Hiera Small,
+  Apache-2.0, as in `facebook/sam2.1-hiera-small`.
+- Two models, each with its weights in an `.onnx_data` file beside it:
+  - `vision_encoder.onnx`: `pixel_values` [1, 3, 1024, 1024] (the picture stretched, RGB from 0
+    to 1, normalized with ImageNet's mean and deviation) → `image_embeddings.0` [1, 32, 256,
+    256], `.1` [1, 64, 128, 128], `.2` [1, 256, 64, 64].
+  - `prompt_encoder_mask_decoder.onnx`: the three embeddings, `input_points` [1, 1, N, 2] in
+    1024 × 1024 coordinates, `input_labels` int64 [1, 1, N] (1 include, 0 exclude) and
+    `input_boxes` [1, 0, 4] (none) → `pred_masks` [1, 1, 3, 256, 256] (scores; above 0 is
+    selected) and `iou_scores` [1, 1, 3]; Gumka keeps the best of the three.
+- Any number of clicks (the click count is a dynamic axis).
+- Checked against darktable's own export of the same checkpoint (samexporter-style, with the
+  padding point): identical masks for one click, two, and an exclusion.
+
+## RealPLKSR (ONNX, Linux)
+
+- darktable's ONNX export of the same MSSIM pretrain checkpoints as the Core ML conversion,
+  from the repository those checkpoints are mirrored in.
+- Inputs: `input` float32 [1, 3, 512, 512] (2×) or [1, 3, 256, 256] (4×), planar RGB from 0
+  to 1. Output: `output` float32 [1, 3, 1024, 1024] for both. The tile size comes from the
+  model, so the 4× upscale takes more, smaller tiles than on macOS.
+
 ## Candidates and exclusions
 
 - Later, a fast second erase model: MI-GAN (Picsart, MIT code and weights, 512 × 512, about
@@ -102,4 +146,5 @@ copyright holder, so the registry's `copyright` lines go into the bundled notice
   pipeline; the third-party Core ML conversions (`ewchampion/migan-coreml-*`) have no model card
   and give a grid artifact over the whole output.
 - MAT is CC BY-NC (research only): not usable.
-- ONNX versions of LaMa and SAM for the ORT backend ([inference.md](inference.md)).
+- darktable's SAM 2.1 export (encoder and decoder, samexporter-style) is published only inside
+  its `.dtmodel` archive; per-file hosting would allow pinning it in place of onnx-community's.

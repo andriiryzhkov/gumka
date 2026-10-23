@@ -13,7 +13,7 @@ use gumka_infer::models::{self, ModelInfo};
 
 use crate::theme::*;
 use crate::widgets;
-use crate::worker::Status;
+use crate::worker::{BACKEND, FOUND, Status, THIS_COMPUTER, runtime_problem};
 
 /// A catalog entry with what was found on disk.
 pub struct ModelRow {
@@ -24,10 +24,12 @@ pub struct ModelRow {
     size: u64,
 }
 
-/// Looks every catalog model up on disk. Cheap: a few metadata reads per model.
+/// Looks every catalog model for this platform up on disk. Cheap: a few metadata reads per
+/// model.
 pub fn load_rows() -> Vec<ModelRow> {
     models::registry()
         .iter()
+        .filter(|info| info.for_this_platform())
         .map(|info| {
             let found = info.find_packages().map(|paths| {
                 paths
@@ -71,17 +73,25 @@ pub fn show<'a>(ui: &mut Ui, rows: &[ModelRow], status: &dyn Fn(&ModelInfo) -> O
                             .font(FontId::new(20.0, semibold()))
                             .color(TEXT),
                     );
+                    let intro = if cfg!(target_os = "macos") {
+                        "Models that run on this Mac come with Gumka, so every tool works \
+                         offline from the start. Only models whose license allows commercial \
+                         use are included."
+                    } else if cfg!(target_os = "linux") {
+                        "Models run on this computer, so every tool works offline. Only models \
+                         whose license allows commercial use are listed."
+                    } else {
+                        "Local models aren't available on this platform yet."
+                    };
                     ui.label(
-                        RichText::new(
-                            "Models that run on this Mac come with Gumka, so every tool works \
-                             offline from the start. Only models whose license allows \
-                             commercial use are included.",
-                        )
-                        .size(13.0)
-                        .color(Color32::from_gray(0xb5)),
+                        RichText::new(intro)
+                            .size(13.0)
+                            .color(Color32::from_gray(0xb5)),
                     );
                     ui.add_space(16.0);
-                    table(ui, rows, &status_of);
+                    if !rows.is_empty() {
+                        table(ui, rows, &status_of);
+                    }
                     ui.add_space(28.0);
                     ui.label(
                         RichText::new("Where models run")
@@ -169,7 +179,12 @@ fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: Option<&Sta
                     ui.label(RichText::new(&info.name).size(13.0).color(TEXT));
                     small(ui, &info.summary);
                     let size = match &row.path {
-                        Ok(_) => format!("{} · {} · included", info.format, format_size(row.size)),
+                        Ok(_) => format!(
+                            "{} · {} · {}",
+                            info.format,
+                            format_size(row.size),
+                            FOUND.to_lowercase()
+                        ),
                         Err(_) if row.incomplete => format!("{} · incomplete", info.format),
                         Err(_) => format!("{} · not downloaded", info.format),
                     };
@@ -188,8 +203,10 @@ fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: Option<&Sta
                 });
                 cell(ui, widths[3], |ui| {
                     let runs_on = match status {
-                        Some(Status::Ready { runs_on, .. }) => format!("This Mac · {runs_on}"),
-                        _ => "This Mac · Core ML".into(),
+                        Some(Status::Ready { runs_on, .. }) => {
+                            format!("{THIS_COMPUTER} · {runs_on}")
+                        }
+                        _ => format!("{THIS_COMPUTER} · {BACKEND}"),
                     };
                     ui.label(RichText::new(runs_on).size(12.5).color(TEXT));
                 });
@@ -229,7 +246,7 @@ fn status_line(ui: &mut Ui, row: &ModelRow, status: Option<&Status>) {
             }
             None | Some(Status::NotLoaded) => {
                 widgets::dot(ui, OK);
-                ui.label(RichText::new("Included").size(12.5).color(TEXT))
+                ui.label(RichText::new(FOUND).size(12.5).color(TEXT))
                     .on_hover_text("Loads when the tool first runs");
             }
             Some(Status::Loading) => {
@@ -245,44 +262,58 @@ fn status_line(ui: &mut Ui, row: &ModelRow, status: Option<&Status>) {
     });
 }
 
+/// The local card's name, state, text and state color; `problem` is why ONNX Runtime didn't
+/// load, if it didn't.
+fn local_state(
+    problem: Option<&'static str>,
+) -> (&'static str, &'static str, &'static str, Color32) {
+    if cfg!(target_os = "macos") {
+        (
+            "This Mac",
+            "Always on",
+            "Core ML on Apple silicon, with the models that come with Gumka. Nothing leaves the \
+             computer.",
+            OK,
+        )
+    } else if !cfg!(target_os = "linux") {
+        (
+            "This computer",
+            "Not available yet",
+            "Local models need ONNX Runtime on this platform, which comes later.",
+            TEXT_WEAK,
+        )
+    } else if let Some(reason) = problem {
+        ("This computer", "Unavailable", reason, WARN)
+    } else {
+        (
+            "This computer",
+            "Always on",
+            "ONNX Runtime from your system, on the CPU, with the models in Gumka's models \
+             folder. Nothing leaves the computer.",
+            OK,
+        )
+    }
+}
+
 fn this_computer_card(ui: &mut Ui, rows: &[ModelRow]) {
     widgets::card(ui, |ui| {
-        let (name, state, text) = if cfg!(target_os = "macos") {
-            (
-                "This Mac",
-                "Always on",
-                "Core ML on Apple silicon, with the models that come with Gumka. Nothing \
-                 leaves the computer.",
-            )
-        } else {
-            (
-                "This computer",
-                "Not available yet",
-                "Local models need ONNX Runtime on this platform, which comes later.",
-            )
-        };
-        card_header(
-            ui,
-            name,
-            state,
-            if cfg!(target_os = "macos") {
-                OK
-            } else {
-                TEXT_WEAK
-            },
-        );
+        let (name, state, text, color) = local_state(runtime_problem());
+        card_header(ui, name, state, color);
         ui.label(RichText::new(text).size(12.5).color(TEXT_LABEL));
         let found: Vec<&ModelRow> = rows.iter().filter(|r| r.path.is_ok()).collect();
         let total = found.iter().map(|r| r.size).sum();
         widgets::info_row(
             ui,
-            "Included models",
+            &format!("{FOUND} models"),
             &format!("{} · {}", found.len(), format_size(total)),
         );
-        let cache = models::cache_dir();
-        widgets::info_row(ui, "Compiled copies", &tilde(&cache));
-        if cache.exists() && widgets::button(ui, reveal_label(), true, None).clicked() {
-            reveal(&cache);
+        // Only Core ML compiles its models.
+        if cfg!(target_os = "macos") {
+            let cache = models::cache_dir();
+            widgets::info_row(ui, "Compiled copies", &tilde(&cache));
+            if cache.exists() && widgets::button(ui, reveal_label(), true, None).clicked() {
+                reveal(&cache);
+            }
         }
     });
 }
@@ -375,6 +406,18 @@ fn reveal(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On Linux the card says when ONNX Runtime is missing, and why, instead of "Always on".
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_card_says_when_onnx_runtime_is_missing() {
+        let reason = "ONNX Runtime is not installed.";
+        let (_, state, text, color) = local_state(Some(reason));
+        assert_eq!((state, text, color), ("Unavailable", reason, WARN));
+        let (name, state, _, color) = local_state(None);
+        assert_eq!((name, state, color), ("This computer", "Always on", OK));
+        assert_eq!(FOUND, "Downloaded");
+    }
 
     #[test]
     fn sizes_read_like_finder() {

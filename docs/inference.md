@@ -1,7 +1,7 @@
 # Inference
 
-Two ways to run a model, no more: locally (Core ML on macOS; ONNX Runtime planned for Windows and
-Linux) or through an API (later; see [overview.md](overview.md#goals-and-scope)).
+Two ways to run a model, no more: locally (Core ML on macOS, ONNX Runtime on Linux; Windows
+later) or through an API (later; see [overview.md](overview.md#goals-and-scope)).
 
 ## Core ML (macOS)
 
@@ -57,12 +57,46 @@ one behind, and models are always loaded from paths that stay the same. See
 [development.md](development.md#core-mls-plan-cache-costs-disk-space) for what this means for
 testing.
 
-## Windows and Linux (later)
+## ONNX Runtime (Linux)
 
-- ONNX Runtime via the `ort` crate, pinned to an EXACT version (2.0 is still a release
-  candidate).
-- Windows: Windows ML (needs Windows 11 24H2 for downloaded execution providers) or DirectML,
-  with fallback. Linux: CUDA / ROCm / OpenVINO. CPU always as the last resort.
+- The `ort` crate, pinned to an exact version (`=2.0.0-rc.15`; 2.0 is still a release
+  candidate), with `load-dynamic`: Gumka neither links nor ships ONNX Runtime but opens the
+  system's library when the first model loads. A build needs no ONNX Runtime (CI has none), and
+  without one the models are only unavailable, with a message saying what to install and to
+  restart Gumka (the failure is kept: the app loads its models once). A library that is there
+  but doesn't open (a library it needs is missing, say) gives dlopen's reason instead. The
+  upscalers, which load when first used, are checked against ONNX Runtime at startup too, and
+  the Models page's card says when it is missing. `unsafe` stays in `ort`;
+  `gumka-infer/src/onnx` has none.
+- Built for API 17, so ONNX Runtime 1.17 or later. The library is looked for as
+  `$ORT_DYLIB_PATH` alone, if set; else `libonnxruntime.so.1` (ONNX Runtime's own builds),
+  `libonnxruntime.so.1.<minor>` (Debian's and Ubuntu's, newest first) and `libonnxruntime.so`
+  (the development link), each in the executable's folder first, then the system's library
+  path.
+- Models run on the CPU (`ONNX Runtime · CPU`), with ONNX Runtime's default thread pool and
+  graph optimizations. All three are fixed-size ONNX exports of the same models as on macOS
+  ([models.md](models.md)); the adapters in `onnx/lama.rs`, `sam.rs` and `upscale.rs` check the
+  inputs' names and shapes when loading and convert pixels to and from float tensors.
+- ORT sessions are created on the inference thread and stay there, like Core ML models.
+- Ubuntu's `libonnxruntime1.23` prints "Schema error: Trying to register schema ..." for every
+  ONNX operator when it loads (it links the system `libonnx` beside its own copy of the
+  schemas). It is harmless: the models load and run.
+- Measured on a Ryzen 7 8845HS (8 cores, 16 threads), CPU: SAM encodes a picture in about
+  2.5 s and selects in 0.1 s; LaMa erases in about 1.6 s; RealPLKSR 4× takes about 1.8 s per
+  256 px tile.
+- Checked: the SAM export's masks match darktable's own SAM 2.1 export exactly on generated
+  pictures; `cargo test -p gumka-infer -- --ignored` runs all three on real ONNX Runtime.
+
+### Later
+
+- GPU execution providers: CUDA / ROCm / OpenVINO on Linux; on Windows, Windows ML (needs
+  Windows 11 24H2 for downloaded execution providers) or DirectML, with fallback. CPU always as
+  the last resort. The ONNX backend is gated to Linux; Windows needs only its registry entries
+  and the gate widened.
 - Keep the ORT backend buildable on macOS as a reference: run the same crop through both
   backends and compare the outputs to catch conversion and precision problems.
-- LaMa uses FFT layers: watch for unsupported-op CPU fallback in any non-native path.
+- LaMa uses FFT layers: watch for unsupported-op CPU fallback in any non-CPU provider.
+- candle (pure Rust) was considered in place of ONNX Runtime and set aside (October 2026): each
+  model would need its architecture written in Rust (it has SAM 1, not SAM 2, no LaMa or
+  RealPLKSR), it has no FFT op for LaMa, and its GPUs are CUDA and Metal only. macOS keeps
+  Core ML.

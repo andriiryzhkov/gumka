@@ -2,8 +2,8 @@
 
 # Gumka
 
-Extensible AI photo retouching, on your Mac, in 16 bits, keeping the file's color profile and
-metadata:
+Extensible AI photo retouching, on your computer, in 16 bits, keeping the file's color profile
+and metadata:
 
 - **Erase:** paint over an object and Gumka fills it in with
   [LaMa](https://github.com/advimman/lama). Pixels outside the erased area stay bit-identical in
@@ -12,7 +12,11 @@ metadata:
   [RealPLKSR](https://github.com/dslisleedh/PLKSR), which sharpens what is there without
   inventing detail. Undo brings back the original size.
 
-Early development: macOS 13 or later (Apple Silicon) only for now.
+Early development: macOS 13 or later (Apple Silicon), and Linux from source.
+
+On Linux the models run on the CPU with your system's ONNX Runtime, 1.17 or later: install it
+first (on Ubuntu 26.04, `sudo apt install libonnxruntime1.23`), or set `ORT_DYLIB_PATH` to its
+library. `cargo xtask models` downloads the Linux models (about 450 MB).
 
 ## Running from source
 

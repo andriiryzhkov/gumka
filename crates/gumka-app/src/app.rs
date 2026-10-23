@@ -21,7 +21,10 @@ use crate::document::{Changed, Document};
 use crate::icons::{self, Icon};
 use crate::theme::*;
 use crate::widgets;
-use crate::worker::{Reply, Status, UPSCALERS, Which, Worker, upscaler_name, upscaler_slot};
+use crate::worker::{
+    BACKEND, FOUND, Reply, Status, THIS_COMPUTER, UPSCALERS, Which, Worker, upscaler_name,
+    upscaler_slot,
+};
 use gumka_core::select::Click;
 
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
@@ -1410,7 +1413,7 @@ impl GumkaApp {
                             .font(FontId::new(14.0, medium()))
                             .color(TEXT),
                     );
-                    widgets::info_row(ui, "Runs on", &format!("This Mac · {runs_on}"));
+                    widgets::info_row(ui, "Runs on", &format!("{THIS_COMPUTER} · {runs_on}"));
                     widgets::hint(
                         ui,
                         "Sharpens what is in the photo without inventing detail.",
@@ -1422,11 +1425,16 @@ impl GumkaApp {
                             .font(FontId::new(14.0, medium()))
                             .color(TEXT),
                     );
-                    widgets::info_row(ui, "Runs on", "This Mac · Core ML");
+                    widgets::info_row(ui, "Runs on", &format!("{THIS_COMPUTER} · {BACKEND}"));
                     widgets::hint(
                         ui,
-                        "Sharpens what is in the photo without inventing detail. Included with \
-                         Gumka; it loads the first time you upscale.",
+                        if cfg!(target_os = "macos") {
+                            "Sharpens what is in the photo without inventing detail. Included \
+                             with Gumka; it loads the first time you upscale."
+                        } else {
+                            "Sharpens what is in the photo without inventing detail. It loads \
+                             the first time you upscale."
+                        },
                     );
                 }
                 Status::Loading => {
@@ -1537,8 +1545,11 @@ impl GumkaApp {
                             .font(FontId::new(14.0, medium()))
                             .color(TEXT),
                     );
-                    widgets::info_row(ui, "Runs on", &format!("This Mac · {runs_on}"));
-                    widgets::hint(ui, "Included with Gumka.");
+                    widgets::info_row(ui, "Runs on", &format!("{THIS_COMPUTER} · {runs_on}"));
+                    // Only macOS's models come with the app.
+                    if cfg!(target_os = "macos") {
+                        widgets::hint(ui, "Included with Gumka.");
+                    }
                 }
                 Status::Loading | Status::NotLoaded => {
                     ui.horizontal(|ui| {
@@ -2189,8 +2200,9 @@ fn model_status_row(ui: &mut Ui, name: &str, status: &Status) {
         ui.label(RichText::new(name).size(12.5).color(TEXT));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let state = match status {
-                Status::Ready { .. } => "Ready on this Mac",
-                Status::NotLoaded => "Included",
+                Status::Ready { .. } if cfg!(target_os = "macos") => "Ready on this Mac",
+                Status::Ready { .. } => "Ready on this computer",
+                Status::NotLoaded => FOUND,
                 Status::Loading => "Loading…",
                 Status::Unavailable(_) => "Unavailable",
             };

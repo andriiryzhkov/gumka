@@ -106,7 +106,7 @@ fn check_models(dir: &Path) -> Result<Vec<&'static models::ModelInfo>, String> {
         .collect();
     for model in &bundled {
         for file in &model.files {
-            if let Err(problem) = crate::verify(&dir.join(&file.path), file) {
+            if let Err(problem) = crate::verify(&model.root_in(dir).join(&file.path), file) {
                 problems.push(format!("  {problem:<9} {}", file.path));
             }
         }
@@ -306,7 +306,7 @@ fn compile_models(from: &Path, bundled: &[&models::ModelInfo], dir: &Path) -> Re
         for package in &model.packages {
             let started = Instant::now();
             let dest = dir.join(models::compiled_name(package));
-            coreml::compile_into(&from.join(package), &dest)
+            coreml::compile_into(&model.root_in(from).join(package), &dest)
                 .map_err(|e| format!("compiling {package}: {e}"))?;
             println!(
                 "  {} ({:.1} s, {})",

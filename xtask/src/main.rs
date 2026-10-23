@@ -99,21 +99,23 @@ fn fetch_models(mut args: impl Iterator<Item = String>) -> Result<bool, String> 
             model.source,
             size(model.size())
         );
+        let root = model.root_in(&dir);
         for file in &model.files {
-            let target = dir.join(&file.path);
+            let target = root.join(&file.path);
+            let shown = target.strip_prefix(&dir).unwrap_or(&target).display();
             match verify(&target, file) {
                 Ok(()) => {
-                    println!("  ok        {}", file.path);
+                    println!("  ok        {shown}");
                     continue;
                 }
                 Err(problem) if check => {
-                    println!("  {problem:<9} {}", file.path);
+                    println!("  {problem:<9} {shown}");
                     complete = false;
                     continue;
                 }
                 Err(_) => {}
             }
-            println!("  download  {} ({})", file.path, size(file.size));
+            println!("  download  {shown} ({})", size(file.size));
             download(&format!("{}{}", model.base_url, file.path), &target, file)?;
         }
     }

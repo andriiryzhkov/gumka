@@ -8,14 +8,14 @@
   Service); optionally `muda` for a native macOS menu bar.
 - `lcms2` (Little CMS, built statically) for color, `tiff`, `png` and `image` for files,
   `fast_image_resize` for Upscale's resampling, `objc2` and its framework crates for Core ML and
-  AppKit.
+  AppKit, `ort` (loading the system's ONNX Runtime) on Linux.
 
 ## Workspace
 
 | Crate | Role |
 |---|---|
 | `gumka-core` | Pictures, file formats and metadata, color conversion, the erase, select and upscale pipelines. No UI, no ML. |
-| `gumka-infer` | The model registry and the Core ML backend (`Inpainter`, `Segmenter` and `Upscaler` implementations). |
+| `gumka-infer` | The model registry and the backends: Core ML on macOS, ONNX Runtime on Linux (`Inpainter`, `Segmenter` and `Upscaler` implementations). |
 | `gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
 | `gumka-app` | The egui app (binary `gumka`). |
 | `xtask` | `cargo xtask models` downloads and checks the models in `models.toml`; `cargo xtask bundle` builds the macOS app ([packaging.md](packaging.md)). |
@@ -45,8 +45,12 @@ it is used, cfg-gated with no-op stand-ins elsewhere.
   cache; `MultiArray` and `PixelBuffer` ([inference.md](inference.md)).
 - `lama.rs`: `CoreMlLama`, the `Inpainter`. `sam.rs`: `CoreMlSam`, the `Segmenter` (at most 14
   clicks per selection). `upscale.rs`: `CoreMlUpscaler`, the `Upscaler` (RealPLKSR 2× and 4×).
-- `models.rs`: the built-in registry (`include_str!` of `models.toml`), the search folders
-  (including the app bundle's compiled models) and `find_packages`.
+- `onnx/` (Linux): `mod.rs` loads the system's ONNX Runtime and opens sessions; `lama.rs`,
+  `sam.rs` and `upscale.rs` hold `OnnxLama`, `OnnxSam` and `OnnxUpscaler`
+  ([inference.md](inference.md#onnx-runtime-linux)).
+- `models.rs`: the built-in registry (`include_str!` of `models.toml`), this platform's entry
+  of each model, the search folders (including the app bundle's compiled models) and
+  `find_packages`.
 
 ### gumka-app
 
@@ -67,7 +71,7 @@ it is used, cfg-gated with no-op stand-ins elsewhere.
 ## Threads
 
 - The UI thread owns the document. Core ML models are not `Send`, so they are created on the
-  inference thread (`worker.rs`) and stay there.
+  inference thread (`worker.rs`) and stay there; ONNX Runtime sessions too.
 - The picture's pixels travel to the inference thread when a model needs them (an erase, an
   upscale, or encoding the picture for selection) and come back with the result. They always
   come back: a panic while handling a request becomes an error, a model that panics while
