@@ -39,12 +39,24 @@ beside it as `<package>_data`.
 
 | Model | Used for | Format | Source | License |
 |---|---|---|---|---|
-| LaMa (Big LaMa) | Erase | Core ML `.mlpackage` | [mlboydaisuke/LaMa-CoreML](https://huggingface.co/mlboydaisuke/LaMa-CoreML) | Apache-2.0 |
-| SAM 2.1 Small | Select object | Core ML, 3 × `.mlpackage` | [apple/coreml-sam2.1-small](https://huggingface.co/apple/coreml-sam2.1-small) | Apache-2.0 |
-| RealPLKSR 2× and 4× | Upscale | Core ML `.mlpackage` each, our conversion | [gumka/realplksr-coreml](https://huggingface.co/gumka/realplksr-coreml), from dslisleedh/PLKSR (weights by neosr-project) | MIT |
-| LaMa (Big LaMa), Linux | Erase | ONNX | [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX) | Apache-2.0 |
-| SAM 2.1 Small, Linux | Select object | ONNX, 2 models with external weights | [onnx-community/sam2.1-hiera-small-ONNX](https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX) | Apache-2.0 (upstream's; the repository states none) |
-| RealPLKSR 2× and 4×, Linux | Upscale | ONNX | [darktable-org/upscale-realplksr-onnx](https://huggingface.co/darktable-org/upscale-realplksr-onnx) | MIT |
+Every model is downloaded from a repository of the [gumka](https://huggingface.co/gumka)
+organization on Hugging Face. Those we didn't make are copies of the upstream files at a pinned
+revision, unchanged (same sizes and SHA-256), with a model card that credits where they come
+from; the upstream column says where.
+
+| Model | Used for | Format | Download | Upstream | License |
+|---|---|---|---|---|---|
+| LaMa (Big LaMa) | Erase | Core ML `.mlpackage` | [gumka/lama-coreml](https://huggingface.co/gumka/lama-coreml) | [mlboydaisuke/LaMa-CoreML](https://huggingface.co/mlboydaisuke/LaMa-CoreML) at `5ed76e3799ab` | Apache-2.0 |
+| SAM 2.1 Small | Select object | Core ML, 3 × `.mlpackage` | [gumka/sam2.1-small-coreml](https://huggingface.co/gumka/sam2.1-small-coreml) | [apple/coreml-sam2.1-small](https://huggingface.co/apple/coreml-sam2.1-small) at `883f5787eb0b` | Apache-2.0 |
+| RealPLKSR 2× and 4× | Upscale | Core ML `.mlpackage` each | [gumka/realplksr-coreml](https://huggingface.co/gumka/realplksr-coreml) | our conversion of dslisleedh/PLKSR (weights by neosr-project) | MIT |
+| LaMa (Big LaMa), Linux | Erase | ONNX | [gumka/lama-onnx](https://huggingface.co/gumka/lama-onnx) | [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX) at `c3c0c9e46893` | Apache-2.0 |
+| SAM 2.1 Small, Linux | Select object | ONNX, 2 models with external weights | [gumka/sam2.1-small-onnx](https://huggingface.co/gumka/sam2.1-small-onnx) | [onnx-community/sam2.1-hiera-small-ONNX](https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX) at `a7df49d8de14` (fp32 files) | Apache-2.0 (the weights'; that repository states none) |
+| RealPLKSR 2× and 4×, Linux | Upscale | ONNX | [gumka/realplksr-onnx](https://huggingface.co/gumka/realplksr-onnx) | [darktable-org/upscale-realplksr-onnx](https://huggingface.co/darktable-org/upscale-realplksr-onnx) at `0bb636eeeed5` (`onnx/`) | MIT |
+
+To copy another upstream model: put its files, a `LICENSE` and a model card (format, inputs and
+outputs, source and license, the upstream revision) in a temporary folder outside the
+repository, check them against `models.toml`, then `hf repos create gumka/<name> --public` and
+`hf upload gumka/<name> <folder> .`, and pin the commit the upload made as `base_url`.
 
 LaMa and SAM 2 are Apache 2.0, RealPLKSR is MIT; all are compatible with GPL-3.0. MIT names its
 copyright holder, so the registry's `copyright` lines go into the bundled notice before the text.

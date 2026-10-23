@@ -6,6 +6,9 @@
 # - The app builds this file in: it is the list on the Models page and tells the app which
 #   packages to open.
 # - URLs are pinned to a revision, so a file can only change here, on purpose.
+# - Every model is downloaded from its gumka/* repository on Hugging Face. Those we didn't
+#   make are copies of the upstream files, unchanged; docs/models.md and each repository's
+#   card say where they come from.
 # - Every model needs a license compatible with GPL-3.0-or-later that allows commercial use.
 #   docs/models.md has each model's provenance and inputs and outputs.
 
@@ -16,13 +19,13 @@ name = "LaMa (Big LaMa)"
 summary = "Best for most objects and large areas"
 format = "Core ML · 800 × 800"
 license = "Apache-2.0"
-source = "mlboydaisuke/LaMa-CoreML"
-source_url = "https://huggingface.co/mlboydaisuke/LaMa-CoreML"
+source = "gumka/lama-coreml"
+source_url = "https://huggingface.co/gumka/lama-coreml"
 platform = "macos"
 # What the app opens, under models/.
 packages = ["LaMa.mlpackage"]
 # Each file is downloaded from base_url + path.
-base_url = "https://huggingface.co/mlboydaisuke/LaMa-CoreML/resolve/5ed76e3799ab4cad31381750d29880c267477e18/"
+base_url = "https://huggingface.co/gumka/lama-coreml/resolve/201e8419315fdf26a822cfd1d15c94bc9d48d258/"
 
 [[models.files]]
 path = "LaMa.mlpackage/Manifest.json"
@@ -46,8 +49,8 @@ name = "SAM 2.1 Small"
 summary = "Selects the object under a click"
 format = "Core ML · 1024 × 1024 · 3 parts"
 license = "Apache-2.0"
-source = "apple/coreml-sam2.1-small"
-source_url = "https://huggingface.co/apple/coreml-sam2.1-small"
+source = "gumka/sam2.1-small-coreml"
+source_url = "https://huggingface.co/gumka/sam2.1-small-coreml"
 platform = "macos"
 # Image encoder, prompt encoder, mask decoder, in that order.
 packages = [
@@ -55,7 +58,7 @@ packages = [
     "SAM2_1SmallPromptEncoderFLOAT16.mlpackage",
     "SAM2_1SmallMaskDecoderFLOAT16.mlpackage",
 ]
-base_url = "https://huggingface.co/apple/coreml-sam2.1-small/resolve/883f5787eb0be35ce6965907a8bc1f5320a5a02e/"
+base_url = "https://huggingface.co/gumka/sam2.1-small-coreml/resolve/9a8dc8cd7c6bd8f4883b19b42ce68396c90917c8/"
 
 [[models.files]]
 path = "SAM2_1SmallImageEncoderFLOAT16.mlpackage/Manifest.json"
@@ -171,12 +174,12 @@ name = "LaMa (Big LaMa)"
 summary = "Best for most objects and large areas"
 format = "ONNX · 512 × 512"
 license = "Apache-2.0"
-source = "Carve/LaMa-ONNX"
-source_url = "https://huggingface.co/Carve/LaMa-ONNX"
+source = "gumka/lama-onnx"
+source_url = "https://huggingface.co/gumka/lama-onnx"
 platform = "linux"
 dir = "LaMa-ONNX"
 packages = ["lama_fp32.onnx"]
-base_url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/"
+base_url = "https://huggingface.co/gumka/lama-onnx/resolve/d979e5c755d09d8b146fc977c78ec3ea9cdc72ed/"
 
 [[models.files]]
 path = "lama_fp32.onnx"
@@ -190,14 +193,14 @@ name = "SAM 2.1 Small"
 summary = "Selects the object under a click"
 format = "ONNX · 1024 × 1024 · 2 parts"
 license = "Apache-2.0"
-source = "onnx-community/sam2.1-hiera-small-ONNX"
-source_url = "https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX"
+source = "gumka/sam2.1-small-onnx"
+source_url = "https://huggingface.co/gumka/sam2.1-small-onnx"
 platform = "linux"
 dir = "SAM2.1-Small-ONNX"
 # Image encoder, then prompt encoder and mask decoder in one; each keeps its weights in an
 # .onnx_data file beside it.
 packages = ["vision_encoder.onnx", "prompt_encoder_mask_decoder.onnx"]
-base_url = "https://huggingface.co/onnx-community/sam2.1-hiera-small-ONNX/resolve/a7df49d8de14b9d2e4504d1687b0d568f905fd8d/onnx/"
+base_url = "https://huggingface.co/gumka/sam2.1-small-onnx/resolve/f5092b4bc45e48d423d2cc83010f720af712b1c9/"
 
 [[models.files]]
 path = "vision_encoder.onnx"
@@ -227,12 +230,12 @@ summary = "Twice the size, sharpening what is there without inventing detail"
 format = "ONNX · 512 → 1024"
 license = "MIT"
 copyright = ["Copyright (c) 2024 Dongheon Lee"]
-source = "darktable-org/upscale-realplksr-onnx"
-source_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx"
+source = "gumka/realplksr-onnx"
+source_url = "https://huggingface.co/gumka/realplksr-onnx"
 platform = "linux"
 dir = "RealPLKSR-ONNX"
 packages = ["model_x2.onnx"]
-base_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx/resolve/0bb636eeeed5fffd256571c3cc440d9fdf62467e/onnx/"
+base_url = "https://huggingface.co/gumka/realplksr-onnx/resolve/cdf0870ee90bb42ab2f3186bc557a0b6a44b3446/"
 
 [[models.files]]
 path = "model_x2.onnx"
@@ -247,12 +250,12 @@ summary = "Four times the size, sharpening what is there without inventing detai
 format = "ONNX · 256 → 1024"
 license = "MIT"
 copyright = ["Copyright (c) 2024 Dongheon Lee"]
-source = "darktable-org/upscale-realplksr-onnx"
-source_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx"
+source = "gumka/realplksr-onnx"
+source_url = "https://huggingface.co/gumka/realplksr-onnx"
 platform = "linux"
 dir = "RealPLKSR-ONNX"
 packages = ["model_x4.onnx"]
-base_url = "https://huggingface.co/darktable-org/upscale-realplksr-onnx/resolve/0bb636eeeed5fffd256571c3cc440d9fdf62467e/onnx/"
+base_url = "https://huggingface.co/gumka/realplksr-onnx/resolve/cdf0870ee90bb42ab2f3186bc557a0b6a44b3446/"
 
 [[models.files]]
 path = "model_x4.onnx"
