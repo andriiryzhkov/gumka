@@ -464,6 +464,16 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), models.len(), "an id twice for one platform");
+        // The app names a model by its id wherever it runs.
+        for m in models {
+            assert!(
+                models
+                    .iter()
+                    .all(|other| other.id != m.id || other.name == m.name),
+                "{} has more than one name",
+                m.id
+            );
+        }
     }
 
     /// A small model: one package of two files.

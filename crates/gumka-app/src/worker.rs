@@ -93,11 +93,14 @@ pub fn upscaler_slot(scale: u32) -> usize {
     UPSCALERS.iter().position(|&s| s == scale).unwrap_or(0)
 }
 
-/// The `scale`× upscaler's name, as the model registry gives it.
+/// The `scale`× upscaler's name, as the model registry gives it. An id has one name on every
+/// platform, so any entry gives it, also where none runs (Windows, for now).
 pub fn upscaler_name(scale: u32) -> String {
-    gumka_infer::models::upscaler_id(scale)
-        .and_then(gumka_infer::models::model)
-        .map_or_else(|_| format!("{scale}× upscaler"), |model| model.name.clone())
+    let id = gumka_infer::models::upscaler_id(scale).ok();
+    gumka_infer::models::registry()
+        .iter()
+        .find(|model| Some(model.id.as_str()) == id)
+        .map_or_else(|| format!("{scale}× upscaler"), |model| model.name.clone())
 }
 
 pub struct Erased {
