@@ -60,8 +60,8 @@ testing.
 ## ONNX Runtime (Linux)
 
 - The `ort` crate, pinned to an exact version (`=2.0.0-rc.15`; 2.0 is still a release
-  candidate), with `load-dynamic`: Gumka neither links nor ships ONNX Runtime but opens the
-  system's library when the first model loads. A build needs no ONNX Runtime (CI has none), and
+  candidate), with `load-dynamic`: Gumka doesn't link ONNX Runtime but opens it when the first
+  model loads, the AppImage's own (Microsoft's 1.31.0 build) or the system's. A build needs no ONNX Runtime (CI has none), and
   without one the models are only unavailable, with a message saying what to install and to
   restart Gumka (the failure is kept: the app loads its models once). A library that is there
   but doesn't open (a library it needs is missing, say) gives dlopen's reason instead. The
@@ -69,10 +69,16 @@ testing.
   the Models page's card says when it is missing. `unsafe` stays in `ort`;
   `gumka-infer/src/onnx` has none.
 - Built for API 17, so ONNX Runtime 1.17 or later. The library is looked for as
-  `$ORT_DYLIB_PATH` alone, if set; else `libonnxruntime.so.1` (ONNX Runtime's own builds),
+  `$ORT_DYLIB_PATH` alone, if set; else the package's (`<prefix>/lib/libonnxruntime.so.1` for
+  `<prefix>/bin/gumka`: the AppImage's, the one it was tested with); `libonnxruntime.so.1`
+  (ONNX Runtime's own builds),
   `libonnxruntime.so.1.<minor>` (Debian's and Ubuntu's, newest first) and `libonnxruntime.so`
   (the development link), each in the executable's folder first, then the system's library
   path.
+- Telemetry is off: Microsoft's builds record and send usage data unless told not to, and
+  `ort` turns it on. The environment is created with it off, and the AppImage sets
+  `ORT_DISABLE_TELEMETRY=1` before ONNX Runtime starts, without which it still keeps a device
+  id on disk ([packaging.md](packaging.md#telemetry)).
 - Models run on the CPU (`ONNX Runtime · CPU`), with ONNX Runtime's default thread pool and
   graph optimizations. All three are fixed-size ONNX exports of the same models as on macOS
   ([models.md](models.md)); the adapters in `onnx/lama.rs`, `sam.rs` and `upscale.rs` check the

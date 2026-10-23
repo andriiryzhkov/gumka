@@ -18,7 +18,7 @@
 | `gumka-infer` | The model registry and the backends: Core ML on macOS, ONNX Runtime on Linux (`Inpainter`, `Segmenter` and `Upscaler` implementations). |
 | `gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
 | `gumka-app` | The egui app (binary `gumka`). |
-| `xtask` | `cargo xtask models` downloads and checks the models in `models.toml`; `cargo xtask bundle` builds the macOS app ([packaging.md](packaging.md)). |
+| `xtask` | `cargo xtask models` downloads and checks the models in `models.toml`; `cargo xtask bundle` builds the macOS app (`bundle.rs`) or the Linux AppImage (`appimage.rs`), with what both need in `package.rs` ([packaging.md](packaging.md)). |
 
 Proposed: `gumka-platform`, all OS-specific code behind traits in `macos.rs` / `windows.rs` /
 `linux.rs`, selected with `#[cfg(target_os = ...)]`. Until it exists, platform code lives where

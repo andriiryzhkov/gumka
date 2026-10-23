@@ -1,6 +1,7 @@
-# On a tag release-<version> (e.g. release-0.2.0): CI, then the universal macOS app, published
-# as a GitHub release with generated notes. The tag's version must match Cargo.toml's; a
-# version with a hyphen (0.2.0-beta.1) is published as a pre-release.
+# On a tag release-<version> (e.g. release-0.2.0): CI, then the universal macOS app and the
+# Linux AppImage, published together as a GitHub release with generated notes. The tag's
+# version must match Cargo.toml's; a version with a hyphen (0.2.0-beta.1) is published as a
+# pre-release.
 name: Release
 
 on:
@@ -17,20 +18,15 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
-  release:
-    name: Release ${{ github.ref_name }}
-    needs: test
-    runs-on: macos-26
-    permissions:
-      contents: write
-    env:
-      CARGO_TERM_COLOR: always
+  version:
+    name: Check the version
+    runs-on: ubuntu-26.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
-      - name: Add the Intel target
-        run: rustup target add x86_64-apple-darwin
       - name: Check the version
         id: version
         run: |
@@ -42,6 +38,19 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    name: Build Gumka.app
+    needs: [test, version]
+    runs-on: macos-26
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Restore the models
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -56,18 +65,68 @@ jobs:
         run: |
           mkdir dist
           mv target/bundle/Gumka-*-universal.dmg dist/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gumka-release-macos
+          path: dist/
+
+  linux:
+    name: Build the AppImage
+    needs: [test, version]
+    # The oldest Ubuntu the runners have: the AppImage runs on its glibc (2.35) and newer.
+    runs-on: ubuntu-22.04
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the packaging tools
+        run: sudo apt-get update && sudo apt-get install -y squashfs-tools desktop-file-utils
+      - name: Install Rust (the version in rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Restore the models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          # Linux has models of its own; the OS in the key keeps them from the Mac's cache.
+          key: models-${{ runner.os }}-${{ hashFiles('models.toml') }}
+      - name: Download and check the models
+        run: cargo xtask models
+      - name: Build the AppImage
+        run: cargo xtask bundle
+      - name: Collect the AppImage
+        run: |
+          mkdir dist
+          mv target/bundle/Gumka-*-x86_64.AppImage dist/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gumka-release-linux
+          path: dist/
+
+  publish:
+    name: Release ${{ github.ref_name }}
+    needs: [version, macos, linux]
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: gumka-release-*
+          path: dist
+          merge-multiple: true
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           prerelease=()
           case "$VERSION" in *-*) prerelease=(--prerelease --latest=false) ;; esac
           cat > notes.md <<'EOF'
-          For Macs with macOS 13 or later (Apple Silicon and Intel).
-
-          The app isn't signed, so macOS blocks it at first. Before opening the disk image, remove
-          the quarantine from it:
+          **macOS** (macOS 13 or later, Apple Silicon and Intel): the `.dmg`. The app isn't
+          signed, so macOS blocks it at first. Before opening the disk image, remove the
+          quarantine from it:
 
           ```sh
           xattr -d com.apple.quarantine ~/Downloads/Gumka-*.dmg
@@ -77,6 +136,14 @@ jobs:
 
           ```sh
           xattr -dr com.apple.quarantine /Applications/Gumka.app
+          ```
+
+          **Linux** (x86_64, glibc 2.35 or later: Ubuntu 22.04, Debian 12, Fedora 36 and newer):
+          the `.AppImage`, with ONNX Runtime and the models inside. Make it executable and run it:
+
+          ```sh
+          chmod +x Gumka-*-x86_64.AppImage
+          ./Gumka-*-x86_64.AppImage
           ```
           EOF
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag "${prerelease[@]}" \

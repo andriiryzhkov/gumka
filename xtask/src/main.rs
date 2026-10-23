@@ -7,10 +7,15 @@
 //! running it again is cheap. Downloads go through `curl`, which macOS, Windows 10 and later,
 //! and Linux distributions ship.
 //!
-//! `bundle` builds the macOS app and its disk image (see `bundle.rs`).
+//! `bundle` builds this platform's package: the macOS app and its disk image (`bundle.rs`),
+//! or the Linux AppImage (`appimage.rs`); `package.rs` holds what both need.
 
+#[cfg(target_os = "linux")]
+mod appimage;
 #[cfg(target_os = "macos")]
 mod bundle;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod package;
 
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -21,7 +26,8 @@ use gumka_infer::models::{self, ModelFile};
 use sha2::{Digest, Sha256};
 
 const USAGE: &str = "usage: cargo xtask models [--check] [--all] [--dir DIR]
-       cargo xtask bundle [--universal] [--no-dmg]
+       cargo xtask bundle [--universal] [--no-dmg]   (macOS)
+       cargo xtask bundle [--no-appimage]            (Linux)
 
   models  Downloads the models in models.toml into models/ and checks each file's SHA-256.
           Files that are already there and correct are kept.
@@ -29,9 +35,12 @@ const USAGE: &str = "usage: cargo xtask models [--check] [--all] [--dir DIR]
           --all    include models for other platforms
           --dir    use DIR instead of the repository's models/
 
-  bundle  Builds Gumka.app and its disk image in target/bundle (macOS; not signed).
-          --universal  for Apple Silicon and Intel Macs in one app
-          --no-dmg     the app only";
+  bundle  Builds this platform's package in target/bundle, with the models: on macOS
+          Gumka.app and its disk image (not signed), on Linux an AppImage carrying its own
+          ONNX Runtime.
+          --universal    for Apple Silicon and Intel Macs in one app
+          --no-dmg       the app only
+          --no-appimage  the AppDir only";
 
 /// Files at least this big get a progress bar.
 const PROGRESS_FROM: u64 = 10_000_000;
@@ -66,9 +75,18 @@ fn bundle(args: impl Iterator<Item = String>) -> Result<bool, String> {
     bundle::run(args).map(|()| true)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn bundle(args: impl Iterator<Item = String>) -> Result<bool, String> {
+    appimage::run(args).map(|()| true)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn bundle(_args: impl Iterator<Item = String>) -> Result<bool, String> {
-    Err("`cargo xtask bundle` builds the macOS app; run it on a Mac".into())
+    Err(
+        "`cargo xtask bundle` builds the macOS app or the Linux AppImage; there is no package \
+         for this platform yet"
+            .into(),
+    )
 }
 
 /// `cargo xtask models`. Returns whether every file is in place.
@@ -157,7 +175,7 @@ fn sha256(path: &Path) -> io::Result<String> {
 }
 
 /// Downloads to a `.part` file next to the target, checks it, then moves it into place.
-fn download(url: &str, target: &Path, file: &ModelFile) -> Result<(), String> {
+pub(crate) fn download(url: &str, target: &Path, file: &ModelFile) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }

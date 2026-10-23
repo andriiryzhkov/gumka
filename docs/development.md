@@ -81,8 +81,10 @@ cargo run --release -p gumka-infer --example coreml_spike -- models/LaMa.mlpacka
   value gets an error that names it.
 - On Windows and Linux the app takes the file as a command-line argument; on macOS it will come
   as an "open documents" event ([opening-and-saving.md](opening-and-saving.md)).
-- `cargo xtask bundle` builds the macOS app and disk image in `target/bundle`
-  ([packaging.md](packaging.md)); `open target/bundle/Gumka.app` runs it.
+- `cargo xtask bundle` builds the macOS app and disk image, or on Linux the AppImage, in
+  `target/bundle` ([packaging.md](packaging.md)); `open target/bundle/Gumka.app` or
+  `target/bundle/Gumka-<version>-x86_64.AppImage` runs it. On Linux it needs `squashfs-tools`
+  and `desktop-file-utils`.
 
 ## Checks
 

@@ -5,7 +5,8 @@
 //! The registry is `models.toml` at the repository root, built in here. `cargo xtask models`
 //! downloads what it lists into the repository's `models/`. Packages are looked up in:
 //! 1. the directory in `$GUMKA_MODELS`,
-//! 2. the app bundle's `Contents/Resources/models`, when running from one,
+//! 2. the package's models, when running from one: the app bundle's `Contents/Resources/models`
+//!    on macOS, `usr/share/gumka/models` in the AppImage on Linux,
 //! 3. `models/` in the current directory,
 //! 4. the repository's `models/` (for builds run from a checkout),
 //! 5. the per-user data directory, e.g. `~/Library/Application Support/Gumka/models` on macOS.
@@ -13,9 +14,10 @@
 //! A directory holds a model only if it has every file the registry lists, each of the listed
 //! size (an interrupted download is skipped, and said why). `$GUMKA_MODELS` is the override:
 //! there the files must exist, but may differ in size (a model converted differently), with a
-//! warning. Checking the SHA-256 sums is left to `cargo xtask models --check`. The app bundle
-//! holds the packages compiled (`LaMa.mlmodelc` for `LaMa.mlpackage`; see [`compiled_name`]),
-//! made by `cargo xtask bundle` from checked downloads.
+//! warning. Checking the SHA-256 sums is left to `cargo xtask models --check`. The macOS app
+//! bundle holds the packages compiled (`LaMa.mlmodelc` for `LaMa.mlpackage`; see
+//! [`compiled_name`]), made by `cargo xtask bundle` from checked downloads; the AppImage holds
+//! them as downloaded.
 //!
 //! An id can have an entry per platform (Core ML on macOS, ONNX on Linux); [`model`] gives this
 //! platform's. A model with a `dir` keeps its files in that folder of a models directory.
@@ -110,11 +112,9 @@ impl ModelInfo {
     /// explanation of what is missing and how to get it.
     pub fn find_packages(&self) -> Result<Vec<PathBuf>, NotFound> {
         let overriding = std::env::var_os("GUMKA_MODELS").map(PathBuf::from);
-        self.find_packages_in(
-            &search_dirs(),
-            overriding.as_deref(),
-            bundle_dir().as_deref(),
-        )
+        // Only Core ML's packages are compiled for the bundle.
+        let compiled = bundle_dir().filter(|_| cfg!(target_os = "macos"));
+        self.find_packages_in(&search_dirs(), overriding.as_deref(), compiled.as_deref())
     }
 
     /// [`Self::find_packages`] in `dirs`, of which `overriding` (if among them) only needs the
@@ -248,16 +248,26 @@ pub fn compiled_name(package: &str) -> String {
     format!("{}.mlmodelc", stem.to_string_lossy())
 }
 
-/// The models folder of the app bundle this program runs from (`<app>/Contents/MacOS/<exe>`
-/// next to `<app>/Contents/Resources/models`), if it is one.
+/// The models folder of the package this program runs from, if it is one.
 pub fn bundle_dir() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let contents = exe
-        .parent()
-        .filter(|d| d.ends_with("Contents/MacOS"))?
-        .parent()?;
-    let dir = contents.join("Resources/models");
+    let dir = package_models(&std::env::current_exe().ok()?)?;
     dir.is_dir().then_some(dir)
+}
+
+/// Where a package puts its models, for the executable `exe`: an app bundle's
+/// `Contents/Resources/models` next to its `Contents/MacOS/<exe>` on macOS, else
+/// `<prefix>/share/gumka/models` for `<prefix>/bin/<exe>` (the AppImage's `usr/`).
+fn package_models(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent()?;
+    if cfg!(target_os = "macos") {
+        let contents = Some(bin)
+            .filter(|d| d.ends_with("Contents/MacOS"))?
+            .parent()?;
+        Some(contents.join("Resources/models"))
+    } else {
+        let prefix = Some(bin).filter(|d| d.ends_with("bin"))?.parent()?;
+        Some(prefix.join("share/gumka/models"))
+    }
 }
 
 /// A model that isn't in any models folder, complete.
@@ -576,6 +586,29 @@ mod tests {
             "files outside the folder don't count"
         );
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A package's models are next to its executable, as each platform's package lays them out;
+    /// a build in `target/` has none.
+    #[test]
+    fn a_package_keeps_its_models_by_its_executable() {
+        let (exe, models) = if cfg!(target_os = "macos") {
+            (
+                "/Applications/Gumka.app/Contents/MacOS/Gumka",
+                "/Applications/Gumka.app/Contents/Resources/models",
+            )
+        } else {
+            (
+                "/tmp/.mount_Gumka/usr/bin/gumka",
+                "/tmp/.mount_Gumka/usr/share/gumka/models",
+            )
+        };
+        assert_eq!(package_models(Path::new(exe)), Some(PathBuf::from(models)));
+        assert_eq!(
+            package_models(Path::new("/src/gumka/target/release/gumka")),
+            None
+        );
+        assert_eq!(package_models(Path::new("gumka")), None);
     }
 
     /// An app bundle holds the packages compiled; one that lacks some is passed over and said

@@ -12,11 +12,22 @@ and metadata:
   [RealPLKSR](https://github.com/dslisleedh/PLKSR), which sharpens what is there without
   inventing detail. Undo brings back the original size.
 
-Early development: macOS 13 or later (Apple Silicon), and Linux from source.
+Early development: macOS 13 or later (Apple Silicon), and Linux (x86_64).
 
-On Linux the models run on the CPU with your system's ONNX Runtime, 1.17 or later: install it
-first (on Ubuntu 26.04, `sudo apt install libonnxruntime1.23`), or set `ORT_DYLIB_PATH` to its
-library. `cargo xtask models` downloads the Linux models (about 450 MB).
+On Linux, download the AppImage from the releases (glibc 2.35 or later: Ubuntu 22.04, Debian 12,
+Fedora 36 and newer). It carries ONNX Runtime and the models, which run on the CPU; make it
+executable and run it:
+
+```sh
+chmod +x Gumka-*-x86_64.AppImage
+./Gumka-*-x86_64.AppImage
+```
+
+Run from source, Gumka uses your system's ONNX Runtime, 1.17 or later: install it first (on
+Ubuntu 26.04, `sudo apt install libonnxruntime1.23`), or unpack a release of ONNX Runtime and
+set `ORT_DYLIB_PATH` to its `libonnxruntime.so`. With Microsoft's own builds, also set
+`ORT_DISABLE_TELEMETRY=1`, or ONNX Runtime records usage data to send to Microsoft.
+`cargo xtask models` downloads the Linux models (about 450 MB).
 
 ## Running from source
 
@@ -29,7 +40,7 @@ cargo run --release -p gumka-app                 # the app
 cargo run --release -p gumka-app -- photo.tif    # open a file directly
 cargo run --release -p gumka-cli -- erase in.tif mask.png out.tif
 cargo run --release -p gumka-cli -- upscale in.tif out.tif --scale 2
-cargo xtask bundle                               # Gumka.app and a disk image in target/bundle
+cargo xtask bundle                               # Gumka.app and a disk image, or on Linux the AppImage, in target/bundle
 ```
 
 The app built by `cargo xtask bundle` carries the models and isn't signed, so on another Mac

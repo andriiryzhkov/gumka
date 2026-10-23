@@ -29,7 +29,7 @@ Current status and scope: [docs/overview.md](docs/overview.md).
 | `crates/gumka-infer` | Model registry and the backends: Core ML (macOS), ONNX Runtime (Linux) for LaMa, SAM, RealPLKSR. |
 | `crates/gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
 | `crates/gumka-app` | The egui app (binary `gumka`). |
-| `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app). |
+| `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app, or the Linux AppImage). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
 | `rust-toolchain.toml` | The pinned Rust version, used locally and in CI. |
 | `models/` | Downloaded models (git-ignored). |
@@ -46,7 +46,7 @@ Module-level detail: [docs/architecture.md](docs/architecture.md).
 cargo xtask models                                   # once: download the models (~340 MB)
 cargo run --release -p gumka-app [-- IMAGE]          # the app
 cargo run --release -p gumka-cli -- erase IN MASK OUT
-cargo xtask bundle                                   # target/bundle/Gumka.app and a .dmg (unsigned)
+cargo xtask bundle                                   # target/bundle: Gumka.app and a .dmg (unsigned), or the AppImage
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

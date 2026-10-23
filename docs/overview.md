@@ -25,8 +25,8 @@ Working:
   Cancel ([upscale-pipeline.md](upscale-pipeline.md)).
 - The Models page, built from `models.toml` via `gumka_infer::models::registry()`.
 - A color-managed preview ([color.md](color.md)).
-- `cargo xtask bundle`: an unsigned `Gumka.app` and disk image with the models bundled
-  ([packaging.md](packaging.md)).
+- `cargo xtask bundle`: an unsigned `Gumka.app` and disk image with the models bundled, or on
+  Linux an AppImage with ONNX Runtime and the models ([packaging.md](packaging.md)).
 
 - Opening files sent by other apps on macOS: Finder's Open With, the Dock, a RAW editor's
   Edit With ([opening-and-saving.md](opening-and-saving.md#how-files-arrive)), and Save &
@@ -71,8 +71,9 @@ them if the code argues otherwise, but keep the principles.
 5. SAM click-to-select. (Done.)
 6. Polish: brush-size shortcut (done), before/after toggle (done), model choice.
 7. Upscale with RealPLKSR, 2× and 4×, then any factor from 1.25× to 4×. (Done.)
-8. Linux: every tool on ONNX Runtime, the system's, on the CPU, run from source. (Done.) Next:
-   GPU execution providers, a package (AppImage or deb), the display's color profile.
+8. Linux: every tool on ONNX Runtime, on the CPU, from source and as an AppImage carrying
+   ONNX Runtime and the models, built nightly and for releases. (Done.) Next: GPU execution
+   providers, the display's color profile.
 
 ## Reference projects
 

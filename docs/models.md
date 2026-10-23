@@ -26,8 +26,8 @@ beside it as `<package>_data`.
 - Every model must have a license compatible with GPL-3.0-or-later that allows commercial use.
   Never include non-commercial-only models. Each model's license text ships in the app bundle.
 - The models the tools need (LaMa, SAM, the RealPLKSR upscalers) are bundled with the app:
-  `cargo xtask bundle` compiles them to `.mlmodelc` from checked downloads
-  ([packaging.md](packaging.md)). The app works offline from its first launch, and its contents
+  `cargo xtask bundle` compiles them to `.mlmodelc` from checked downloads for the macOS app,
+  and puts the ONNX files in the AppImage as downloaded ([packaging.md](packaging.md)). The app works offline from its first launch, and its contents
   are what was tested. Small models are bundled; the upscalers are 15 MB each.
 - Optional and large models (a second erase model; planned): downloaded only when the user asks, from the Models page, into `~/Library/Application Support/Gumka/models`, verified
   against `models.toml` (size and SHA-256), never in the background; they survive app updates.

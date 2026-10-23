@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! ONNX Runtime (Linux): the system's library, loaded when the first model is.
+//! ONNX Runtime (Linux): the package's library or the system's, loaded when the first model is.
 //!
-//! Gumka neither links nor ships ONNX Runtime: `ort` opens `libonnxruntime` at run time, so a
-//! build needs none, and without it the models are only unavailable, with a message that says
-//! what to install. `$ORT_DYLIB_PATH` names the library to use instead. Models run on the CPU.
+//! Gumka doesn't link ONNX Runtime: `ort` opens `libonnxruntime` at run time, so a build needs
+//! none, and without it the models are only unavailable, with a message that says what to
+//! install. The AppImage carries its own, which comes first; `$ORT_DYLIB_PATH` names the
+//! library to use instead of either. Models run on the CPU.
 
 mod lama;
 mod sam;
@@ -41,7 +42,13 @@ static LOADED: OnceLock<std::result::Result<Environment, String>> = OnceLock::ne
 /// Loads ONNX Runtime, once: its environment, or the reason it isn't there.
 pub fn runtime() -> std::result::Result<&'static Environment, String> {
     LOADED
-        .get_or_init(|| load(&library_names(std::env::var_os("ORT_DYLIB_PATH"))))
+        .get_or_init(|| {
+            let bundled = std::env::current_exe()
+                .ok()
+                .and_then(|exe| package_library(&exe))
+                .filter(|path| path.is_file());
+            load(&library_names(std::env::var_os("ORT_DYLIB_PATH"), bundled))
+        })
         .as_ref()
         .map_err(Clone::clone)
 }
@@ -51,13 +58,22 @@ pub fn problem() -> Option<&'static str> {
     LOADED.get()?.as_ref().err().map(String::as_str)
 }
 
-/// The libraries to try, in order: `overriding` alone if it is set, else ONNX Runtime's own
-/// name, Debian's and Ubuntu's (one per minor version), and the development link.
-fn library_names(overriding: Option<OsString>) -> Vec<PathBuf> {
+/// Where a package puts ONNX Runtime, for the executable `exe`: `<prefix>/lib` for
+/// `<prefix>/bin/<exe>` (the AppImage's `usr/`).
+fn package_library(exe: &Path) -> Option<PathBuf> {
+    let bin = exe.parent().filter(|d| d.ends_with("bin"))?;
+    Some(bin.parent()?.join("lib/libonnxruntime.so.1"))
+}
+
+/// The libraries to try, in order: `overriding` alone if it is set, else the package's
+/// (`bundled`, the one it was tested with), ONNX Runtime's own name, Debian's and Ubuntu's (one
+/// per minor version), and the development link.
+fn library_names(overriding: Option<OsString>, bundled: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(path) = overriding.filter(|p| !p.is_empty()) {
         return vec![path.into()];
     }
-    let mut names = vec![PathBuf::from("libonnxruntime.so.1")];
+    let mut names: Vec<PathBuf> = bundled.into_iter().collect();
+    names.push("libonnxruntime.so.1".into());
     names.extend(
         (MIN_MINOR..=MAX_MINOR)
             .rev()
@@ -72,8 +88,12 @@ fn load(names: &[PathBuf]) -> std::result::Result<Environment, String> {
     for name in names {
         match ort::init_from(name) {
             Ok(builder) => {
+                // Microsoft's own builds send usage data unless told not to, and `ort` turns
+                // it on: nothing leaves the computer. (The AppImage also sets
+                // ORT_DISABLE_TELEMETRY, which stops it before ONNX Runtime starts.)
                 return builder
                     .with_name("gumka")
+                    .with_telemetry(false)
                     .build()
                     .map_err(|e| format!("ONNX Runtime didn't start: {e}"));
             }
@@ -96,9 +116,9 @@ fn load(names: &[PathBuf]) -> std::result::Result<Environment, String> {
     }
     if problems.is_empty() {
         Err(format!(
-            "ONNX Runtime is not installed. Install it with your package manager \
-             (libonnxruntime, 1.{MIN_MINOR} or later) or set ORT_DYLIB_PATH to its library, \
-             then restart Gumka."
+            "ONNX Runtime is not installed. Install libonnxruntime 1.{MIN_MINOR} or later with \
+             your package manager, or unpack a release of ONNX Runtime and set ORT_DYLIB_PATH to \
+             its libonnxruntime.so, then restart Gumka."
         ))
     } else {
         Err(format!("ONNX Runtime didn't load: {}", problems.join("; ")))
@@ -175,11 +195,16 @@ mod tests {
 
     #[test]
     fn the_override_is_the_only_library_tried() {
+        let bundled = || {
+            Some(PathBuf::from(
+                "/tmp/.mount_Gumka/usr/lib/libonnxruntime.so.1",
+            ))
+        };
         assert_eq!(
-            library_names(Some("/opt/ort/libonnxruntime.so".into())),
+            library_names(Some("/opt/ort/libonnxruntime.so".into()), bundled()),
             [PathBuf::from("/opt/ort/libonnxruntime.so")]
         );
-        let names = library_names(Some(OsString::new()));
+        let names = library_names(Some(OsString::new()), None);
         assert_eq!(names[0], PathBuf::from("libonnxruntime.so.1"));
         assert!(
             names.contains(&PathBuf::from("libonnxruntime.so.1.23")),
@@ -190,7 +215,29 @@ mod tests {
             MIN_MINOR - 1
         ))));
         assert_eq!(names.last(), Some(&PathBuf::from("libonnxruntime.so")));
-        assert_eq!(library_names(None), names);
+        assert_eq!(library_names(None, None), names);
+
+        // The package's own comes before the system's.
+        let with_bundled = library_names(None, bundled());
+        assert_eq!(with_bundled[0], bundled().unwrap());
+        assert_eq!(with_bundled[1..], names[..]);
+    }
+
+    /// The AppImage keeps ONNX Runtime in `usr/lib`, beside `usr/bin`; a build in `target/`
+    /// has none of its own.
+    #[test]
+    fn a_package_keeps_onnx_runtime_by_its_executable() {
+        assert_eq!(
+            package_library(Path::new("/tmp/.mount_Gumka/usr/bin/gumka")),
+            Some(PathBuf::from(
+                "/tmp/.mount_Gumka/usr/lib/libonnxruntime.so.1"
+            ))
+        );
+        assert_eq!(
+            package_library(Path::new("/src/target/release/gumka")),
+            None
+        );
+        assert_eq!(package_library(Path::new("gumka")), None);
     }
 
     /// Without the library, the reason says what to install and to restart; the one library
