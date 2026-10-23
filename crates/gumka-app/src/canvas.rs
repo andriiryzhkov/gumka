@@ -350,6 +350,16 @@ impl Budget {
         }
     }
 
+    /// No deadline in practice, for tests that need every tile in one call however slow the
+    /// machine (a busy CI runner can take over 25 ms for a few tiles).
+    #[cfg(test)]
+    fn unlimited() -> Self {
+        Self {
+            until: Instant::now() + Duration::from_secs(3600),
+            used: false,
+        }
+    }
+
     /// Whether another tile can be made now; the first always can.
     fn take(&mut self) -> bool {
         let ok = !self.used || Instant::now() < self.until;
@@ -1941,7 +1951,7 @@ pub(crate) mod tests {
             ctx,
             ..
         } = &mut v.canvas;
-        let left = pyramid.make_visible(ctx, 0, &place, &mut Budget::new(), |f, r| {
+        let left = pyramid.make_visible(ctx, 0, &place, &mut Budget::unlimited(), |f, r| {
             render_pixels(&pixels, display, f, r)
         });
         assert!(!left && made(pyramid, 0).len() == 6, "3 x 2 tiles");
