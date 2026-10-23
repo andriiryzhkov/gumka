@@ -103,6 +103,8 @@ pub struct Picture {
     /// Set when the source is a TIFF, for saving as TIFF again.
     tiff: Option<TiffSource>,
     file_type: FileType,
+    /// Width and height as opened: the metadata describes a picture of this size.
+    source_size: (u32, u32),
 }
 
 /// What a reader gives back.
@@ -124,6 +126,8 @@ pub(crate) struct Image<'a> {
     pub associated_alpha: bool,
     pub bit_depth: u8,
     pub gray: bool,
+    /// The size differs from the source's: the metadata's own record of it must follow.
+    pub resized: bool,
 }
 
 impl Picture {
@@ -155,6 +159,7 @@ impl Picture {
             }
         }
         Ok(Picture {
+            source_size: decoded.pixels.dimensions(),
             pixels: decoded.pixels,
             alpha: decoded.alpha,
             associated_alpha: decoded.associated_alpha,
@@ -169,6 +174,7 @@ impl Picture {
     /// Wraps pixels that did not come from a file (tests, tools).
     pub fn from_pixels(pixels: Rgb16, bit_depth: u8) -> Self {
         Picture {
+            source_size: pixels.dimensions(),
             pixels,
             alpha: None,
             associated_alpha: false,
@@ -231,9 +237,34 @@ impl Picture {
         &self.meta
     }
 
-    #[cfg(test)]
-    pub(crate) fn alpha(&self) -> Option<&[u16]> {
+    /// The alpha channel, one value per pixel, if the picture has one.
+    pub fn alpha(&self) -> Option<&[u16]> {
         self.alpha.as_deref()
+    }
+
+    /// Whether the colors are premultiplied by the alpha (a TIFF's associated alpha).
+    pub fn associated_alpha(&self) -> bool {
+        self.associated_alpha
+    }
+
+    /// Swaps the picture's pixels and alpha channel with `pixels` and `alpha`, which may be of
+    /// another size; afterwards they hold the picture's old ones. Refused, changing nothing,
+    /// when the alpha doesn't fit: one value per pixel when the picture has an alpha channel,
+    /// none when it hasn't.
+    pub fn swap_pixels(&mut self, pixels: &mut Rgb16, alpha: &mut Option<Vec<u16>>) -> Result<()> {
+        let len = pixels.width() as usize * pixels.height() as usize;
+        match (&self.alpha, &*alpha) {
+            (Some(_), Some(new)) if new.len() == len => {}
+            (None, None) => {}
+            _ => {
+                return Err(Error::Unsupported(
+                    "the alpha channel doesn't match the pixels".into(),
+                ));
+            }
+        }
+        std::mem::swap(&mut self.pixels, pixels);
+        std::mem::swap(&mut self.alpha, alpha);
+        Ok(())
     }
 
     /// Saves to `path` in the format its extension names. Writes a temporary file next to it,
@@ -299,9 +330,17 @@ impl Picture {
             associated_alpha: self.associated_alpha,
             bit_depth: self.bit_depth,
             gray: self.gray,
+            resized: self.pixels.dimensions() != self.source_size,
         };
         match file_type {
-            FileType::Tiff => tiff_io::write(&mut out, &image, self.tiff.as_ref(), &self.meta)?,
+            FileType::Tiff => tiff_io::write(&mut out, &image, self.tiff.as_ref(), &self.meta)
+                .map_err(|e| match e {
+                    // Offsets past 4 GB, which a TIFF can't hold.
+                    Error::Tiff(tiff::TiffError::IntSizeError) => Error::Unsupported(
+                        "This photo is too large for a TIFF (over 4 GB). Save it as PNG.".into(),
+                    ),
+                    e => e,
+                })?,
             FileType::Png => png_io::write(&mut out, &image, &self.meta)?,
             FileType::Jpeg => jpeg_io::write(&mut out, &image, &self.meta)?,
         }

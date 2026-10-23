@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The inference thread: loads the models once and runs erases and selections off the UI
-//! thread.
+//! The inference thread: loads the models once and runs erases, selections and upscales off
+//! the UI thread.
 //!
 //! Core ML models are not `Send`, so they are created on this thread and stay here. The
 //! picture's pixels travel to the thread when a model needs them (an erase, or encoding the
@@ -12,6 +12,8 @@
 
 use std::any::Any;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Instant;
@@ -19,11 +21,18 @@ use std::time::Instant;
 use eframe::egui;
 use gumka_core::erase::EraseSettings;
 use gumka_core::select::{Click, mask_from_scores, model_input, to_input};
+use gumka_core::upscale::{Alpha, Factor, Upscaler};
 use gumka_core::{Mask, Rect, Rgb16};
 
 pub enum Status {
     Loading,
-    Ready { model: String, runs_on: String },
+    Ready {
+        model: String,
+        runs_on: String,
+    },
+    /// Found complete and loaded when first used: the upscalers, which most sessions never
+    /// need, aren't loaded at startup.
+    NotLoaded,
     Unavailable(String),
 }
 
@@ -34,10 +43,28 @@ impl Status {
 }
 
 /// Which model a status is about.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Which {
     Inpainter,
     Segmenter,
+    /// The upscaler of this scale (2 or 4).
+    Upscaler(u32),
+}
+
+/// The upscalers there are, by scale.
+pub const UPSCALERS: [u32; 2] = [2, 4];
+
+/// Where the `scale`× upscaler is in lists ordered like [`UPSCALERS`]. Scales come from
+/// `Factor::model_scale`, which only gives those there are.
+pub fn upscaler_slot(scale: u32) -> usize {
+    UPSCALERS.iter().position(|&s| s == scale).unwrap_or(0)
+}
+
+/// The `scale`× upscaler's name, as the model registry gives it.
+pub fn upscaler_name(scale: u32) -> String {
+    gumka_infer::models::upscaler_id(scale)
+        .and_then(gumka_infer::models::model)
+        .map_or_else(|_| format!("{scale}× upscaler"), |model| model.name.clone())
 }
 
 pub struct Erased {
@@ -47,8 +74,23 @@ pub struct Erased {
     pub seconds: f32,
 }
 
+/// An upscale's result.
+pub struct Upscaled {
+    pub pixels: Rgb16,
+    pub alpha: Option<Vec<u16>>,
+    pub factor: Factor,
+    /// The model's name, for the history.
+    pub model: String,
+    pub seconds: f32,
+}
+
 pub enum Reply {
     Status(Which, Status),
+    /// Tiles of the running upscale done, of how many.
+    Progress {
+        done: usize,
+        total: usize,
+    },
     /// The most clicks one selection can have, once the selection model is loaded.
     MaxClicks(usize),
     /// The pixels always come back, changed or not.
@@ -61,6 +103,12 @@ pub enum Reply {
         pixels: Rgb16,
         generation: u64,
         result: Result<f32, String>,
+    },
+    /// The picture's pixels always come back, as they were; the larger ones with them, unless
+    /// the upscale failed (`Err`) or was cancelled (`Ok(None)`).
+    Upscaled {
+        pixels: Rgb16,
+        result: Result<Option<Upscaled>, String>,
     },
     /// A selection mask for the clicks of request `id`, picture-sized, and the seconds taken.
     Selected {
@@ -89,6 +137,16 @@ enum Request {
         clicks: Vec<Click>,
         size: (u32, u32),
     },
+    Upscale {
+        pixels: Rgb16,
+        alpha: Option<Vec<u16>>,
+        /// The colors are premultiplied by the alpha.
+        premultiplied: bool,
+        factor: Factor,
+        profile: Option<Vec<u8>>,
+        /// Set to stop between tiles.
+        cancel: Arc<AtomicBool>,
+    },
 }
 
 impl Request {
@@ -107,6 +165,10 @@ impl Request {
             },
             Request::Select { id, .. } => Reply::Selected {
                 id,
+                result: Err(error),
+            },
+            Request::Upscale { pixels, .. } => Reply::Upscaled {
+                pixels,
                 result: Err(error),
             },
         }
@@ -168,6 +230,28 @@ impl Worker {
         self.send(Request::Select { id, clicks, size });
     }
 
+    /// Upscales the picture by `factor`; `premultiplied` says how `alpha` goes with the colors.
+    /// Setting the flag it returns stops the upscale after the tile it is on.
+    pub fn upscale(
+        &mut self,
+        pixels: Rgb16,
+        alpha: Option<Vec<u16>>,
+        premultiplied: bool,
+        factor: Factor,
+        profile: Option<Vec<u8>>,
+    ) -> Arc<AtomicBool> {
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.send(Request::Upscale {
+            pixels,
+            alpha,
+            premultiplied,
+            factor,
+            profile,
+            cancel: cancel.clone(),
+        });
+        cancel
+    }
+
     fn send(&mut self, request: Request) {
         if let Err(mpsc::SendError(request)) = self.requests.send(request) {
             self.failed.push(request.failed(STOPPED));
@@ -190,7 +274,7 @@ impl Worker {
     }
 }
 
-/// The thread's body: `run`, and should it panic, both models become unavailable and the
+/// The thread's body: `run`, and should it panic, every model becomes unavailable and the
 /// thread goes on answering requests without running them until the worker is dropped, so
 /// every request still gets its pixels back.
 fn serve(
@@ -202,7 +286,11 @@ fn serve(
     let result = panic::catch_unwind(AssertUnwindSafe(|| run(&requests, &replies, &ctx)));
     if let Err(payload) = result {
         let reason = format!("{STOPPED}: {}", panic_message(&*payload));
-        for which in [Which::Inpainter, Which::Segmenter] {
+        let upscalers = UPSCALERS.map(Which::Upscaler);
+        for which in [Which::Inpainter, Which::Segmenter]
+            .into_iter()
+            .chain(upscalers)
+        {
             let _ = replies.send(Reply::Status(which, Status::Unavailable(reason.clone())));
         }
         ctx.request_repaint();
@@ -218,11 +306,21 @@ fn run(requests: &Receiver<Request>, replies: &Sender<Reply>, ctx: &egui::Contex
         let _ = replies.send(reply);
         ctx.request_repaint();
     };
+    // The upscalers are only looked for: they load when first used.
+    for scale in UPSCALERS {
+        let status = match guarded(|| backend::find_upscaler(scale)) {
+            Ok(()) => Status::NotLoaded,
+            Err(reason) => Status::Unavailable(reason),
+        };
+        send(Reply::Status(Which::Upscaler(scale), status));
+    }
     let mut inpainter = load(&send, Which::Inpainter, backend::load_inpainter);
     let mut segmenter = load(&send, Which::Segmenter, backend::load_segmenter);
     if let Some(segmenter) = &segmenter {
         send(Reply::MaxClicks(segmenter.max_clicks()));
     }
+    let mut upscalers: [Option<(Box<dyn Upscaler>, String)>; UPSCALERS.len()] =
+        std::array::from_fn(|_| None);
 
     for request in requests {
         match request {
@@ -289,6 +387,56 @@ fn run(requests: &Receiver<Request>, replies: &Sender<Reply>, ctx: &egui::Contex
                 });
                 send(Reply::Selected { id, result });
             }
+            Request::Upscale {
+                pixels,
+                alpha,
+                premultiplied,
+                factor,
+                profile,
+                cancel,
+            } => {
+                let scale = factor.model_scale();
+                let slot = &mut upscalers[upscaler_slot(scale)];
+                if slot.is_none() {
+                    let which = Which::Upscaler(scale);
+                    send(Reply::Status(which, Status::Loading));
+                    let name = upscaler_name(scale);
+                    *slot = load(&send, which, || backend::load_upscaler(scale))
+                        .map(|model| (model, name));
+                }
+                let result = guarded(|| match slot.as_mut() {
+                    Some((upscaler, name)) => {
+                        let t = Instant::now();
+                        let alpha = alpha.as_deref().map(|values| Alpha {
+                            values,
+                            premultiplied,
+                        });
+                        gumka_core::upscale::upscale(
+                            &pixels,
+                            alpha,
+                            factor,
+                            upscaler.as_mut(),
+                            profile.as_deref(),
+                            &mut |done, total| {
+                                send(Reply::Progress { done, total });
+                                !cancel.load(Ordering::Relaxed)
+                            },
+                        )
+                        .map(|done| {
+                            done.map(|up| Upscaled {
+                                pixels: up.pixels,
+                                alpha: up.alpha,
+                                factor,
+                                model: name.clone(),
+                                seconds: t.elapsed().as_secs_f32(),
+                            })
+                        })
+                        .map_err(|e| e.to_string())
+                    }
+                    None => Err("the upscale model is unavailable".into()),
+                });
+                send(Reply::Upscaled { pixels, result });
+            }
         }
     }
 }
@@ -314,7 +462,11 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
 type Loaded<T> = Result<(Box<T>, String, String), String>;
 
 /// Loads a model and reports its status. A panic while loading makes it unavailable.
-fn load<T: ?Sized>(send: &impl Fn(Reply), which: Which, load: fn() -> Loaded<T>) -> Option<Box<T>> {
+fn load<T: ?Sized>(
+    send: &impl Fn(Reply),
+    which: Which,
+    load: impl FnOnce() -> Loaded<T>,
+) -> Option<Box<T>> {
     match guarded(load) {
         Ok((model, name, runs_on)) => {
             send(Reply::Status(
@@ -337,8 +489,9 @@ fn load<T: ?Sized>(send: &impl Fn(Reply), which: Which, load: fn() -> Loaded<T>)
 mod backend {
     use gumka_core::erase::Inpainter;
     use gumka_core::select::Segmenter;
+    use gumka_core::upscale::Upscaler;
     use gumka_infer::coreml::ComputeUnits;
-    use gumka_infer::{CoreMlLama, CoreMlSam, models};
+    use gumka_infer::{CoreMlLama, CoreMlSam, CoreMlUpscaler, models};
 
     use super::Loaded;
 
@@ -358,12 +511,31 @@ mod backend {
             "Core ML · GPU".into(),
         ))
     }
+
+    /// Whether the `scale`× upscaler's files are all there, without loading it.
+    pub fn find_upscaler(scale: u32) -> Result<(), String> {
+        models::model(models::upscaler_id(scale)?)?
+            .find_packages()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn load_upscaler(scale: u32) -> Loaded<dyn Upscaler> {
+        let upscaler = CoreMlUpscaler::load(scale, &models::cache_dir(), ComputeUnits::CpuAndGpu)
+            .map_err(|e| e.to_string())?;
+        Ok((
+            Box::new(upscaler),
+            super::upscaler_name(scale),
+            "Core ML · GPU".into(),
+        ))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod backend {
     use gumka_core::erase::Inpainter;
     use gumka_core::select::Segmenter;
+    use gumka_core::upscale::Upscaler;
 
     use super::Loaded;
 
@@ -374,6 +546,14 @@ mod backend {
     }
 
     pub fn load_segmenter() -> Loaded<dyn Segmenter> {
+        Err(NONE.into())
+    }
+
+    pub fn find_upscaler(_: u32) -> Result<(), String> {
+        Err(NONE.into())
+    }
+
+    pub fn load_upscaler(_: u32) -> Loaded<dyn Upscaler> {
         Err(NONE.into())
     }
 }
@@ -453,6 +633,37 @@ pub(crate) mod tests {
             };
             (pixels, mask)
         }
+
+        /// Takes an upscale request.
+        pub(crate) fn upscale(&self) -> Asked {
+            let Request::Upscale {
+                pixels,
+                alpha,
+                premultiplied,
+                factor,
+                cancel,
+                ..
+            } = self.next("upscale")
+            else {
+                panic!("expected a request to upscale");
+            };
+            Asked {
+                pixels,
+                alpha,
+                premultiplied,
+                factor,
+                cancel,
+            }
+        }
+    }
+
+    /// What an upscale request brought.
+    pub(crate) struct Asked {
+        pub pixels: Rgb16,
+        pub alpha: Option<Vec<u16>>,
+        pub premultiplied: bool,
+        pub factor: Factor,
+        pub cancel: Arc<AtomicBool>,
     }
 
     #[test]
@@ -580,7 +791,11 @@ pub(crate) mod tests {
                 .recv_timeout(std::time::Duration::from_secs(10))
                 .ok()
         };
-        for expected in [Which::Inpainter, Which::Segmenter] {
+        let upscalers = UPSCALERS.map(Which::Upscaler);
+        for expected in [Which::Inpainter, Which::Segmenter]
+            .into_iter()
+            .chain(upscalers)
+        {
             match next() {
                 Some(Reply::Status(which, Status::Unavailable(reason))) => {
                     assert!(
@@ -611,6 +826,37 @@ pub(crate) mod tests {
         ));
         drop(requests);
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn an_upscale_the_thread_cant_take_hands_the_pixels_back() {
+        let (mut worker, fake) = fake();
+        drop(fake);
+        let cancel = worker.upscale(Rgb16::new(6, 4), Some(vec![0; 24]), false, Factor::X2, None);
+        assert!(!cancel.load(Ordering::Relaxed));
+        match worker.try_recv() {
+            Some(Reply::Upscaled { pixels, result }) => {
+                assert_eq!(pixels.dimensions(), (6, 4));
+                assert_eq!(result.err().as_deref(), Some(STOPPED));
+            }
+            _ => panic!("expected the upscale back"),
+        }
+    }
+
+    #[test]
+    fn an_upscaler_that_doesnt_load_is_unavailable() {
+        let (reply_tx, replies) = mpsc::channel();
+        let send = |reply| reply_tx.send(reply).unwrap();
+        let model = load::<dyn Upscaler>(&send, Which::Upscaler(4), || {
+            Err("RealPLKSR 4× is not downloaded".into())
+        });
+        assert!(model.is_none());
+        match replies.try_recv() {
+            Ok(Reply::Status(Which::Upscaler(4), Status::Unavailable(reason))) => {
+                assert!(reason.contains("not downloaded"), "{reason}");
+            }
+            _ => panic!("expected the 4× upscaler to be unavailable"),
+        }
     }
 
     #[test]

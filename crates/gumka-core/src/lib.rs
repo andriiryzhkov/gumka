@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Gumka's image pipeline: opening and saving pictures with their metadata, and the
-//! crop/scale/blend steps around model-based tools. No UI and no ML here.
+//! Gumka's image pipeline: opening and saving pictures with their metadata, and the steps
+//! around model-based tools (Erase's crop, scale and blend; Upscale's tiles). No UI and no ML
+//! here.
 
 pub mod color;
 pub mod erase;
@@ -13,6 +14,7 @@ mod png_io;
 mod round_trips;
 pub mod select;
 mod tiff_io;
+pub mod upscale;
 
 pub use image;
 
@@ -92,6 +94,40 @@ pub fn crop(image: &Rgb16, rect: Rect) -> Rgb16 {
     image::imageops::crop_imm(image, rect.x, rect.y, rect.width, rect.height).to_image()
 }
 
+/// Work that reads fewer pixels than this is done on the calling thread: starting threads would
+/// cost more than it saves.
+pub const PARALLEL_FROM: u64 = 1 << 16;
+
+/// Fills `out`, rows of `width` values, with `fill(first row, rows)`: split over the cores by
+/// rows when the work reads at least [`PARALLEL_FROM`] pixels, else on the calling thread.
+pub fn by_rows<T: Send>(
+    out: &mut [T],
+    width: usize,
+    pixels_read: u64,
+    fill: impl Fn(usize, &mut [T]) + Sync,
+) {
+    // Nothing to fill: callers split `out` into rows of `width`, which can't be 0.
+    if out.is_empty() || width == 0 {
+        return;
+    }
+    let threads = if pixels_read < PARALLEL_FROM {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    };
+    if threads == 1 {
+        fill(0, out);
+        return;
+    }
+    let rows_each = (out.len() / width).div_ceil(threads).max(1);
+    let fill = &fill;
+    std::thread::scope(|scope| {
+        for (i, chunk) in out.chunks_mut(rows_each * width).enumerate() {
+            scope.spawn(move || fill(i * rows_each, chunk));
+        }
+    });
+}
+
 /// Swaps a region of `image` with `patch` (same size), so applying the result again undoes it.
 pub fn swap_region(image: &mut Rgb16, rect: Rect, patch: &mut Rgb16) {
     assert_eq!(patch.dimensions(), (rect.width, rect.height), "patch size");
@@ -103,5 +139,44 @@ pub fn swap_region(image: &mut Rgb16, rect: Rect, patch: &mut Rgb16) {
         let start = ((rect.y as usize + row) * width + rect.x as usize) * 3;
         image[start..start + row_len]
             .swap_with_slice(&mut patch[row * row_len..(row + 1) * row_len]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Large work is split over threads into the same result as one pass; small work stays on
+    /// the calling thread.
+    #[test]
+    fn rows_split_over_threads_as_one_pass_would_fill_them() {
+        let (width, rows) = (300, 250);
+        let row = |first: usize, out: &mut [u32]| {
+            for (i, v) in out.iter_mut().enumerate() {
+                *v = ((first + i / width) * 1000 + i % width) as u32;
+            }
+        };
+        let mut one = vec![0; width * rows];
+        row(0, &mut one);
+        let mut split = vec![0; width * rows];
+        by_rows(&mut split, width, PARALLEL_FROM, row);
+        assert_eq!(split, one);
+
+        let caller = std::thread::current().id();
+        let mut small = vec![0u32; width * 2];
+        by_rows(&mut small, width, PARALLEL_FROM - 1, |_, _| {
+            assert_eq!(std::thread::current().id(), caller);
+        });
+        let threads = std::sync::Mutex::new(std::collections::HashSet::new());
+        by_rows(&mut split, width, PARALLEL_FROM, |_, _| {
+            threads.lock().unwrap().insert(std::thread::current().id());
+        });
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let chunks = rows.div_ceil(rows.div_ceil(cores));
+        assert_eq!(
+            threads.into_inner().unwrap().len(),
+            chunks,
+            "one thread a chunk"
+        );
     }
 }

@@ -40,6 +40,8 @@ icon!(
     ERASE,
     "M20 20H9M3.6 14.4l9-9a2 2 0 0 1 2.8 0l3.2 3.2a2 2 0 0 1 0 2.8L12 18H7.6l-4-4a1 1 0 0 1 0-1.4zM9 9l6 6"
 );
+// Arrows out from the corners: the picture made larger.
+icon!(UPSCALE, "M14 4h6v6M20 4l-6 6M10 20H4v-6M4 20l6-6");
 icon!(
     OPEN,
     "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
@@ -55,10 +57,6 @@ icon!(REMOVE, "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM8 12h8");
 icon!(
     SELECT,
     "M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8l1.4 1.4M17.8 6.2l1.4-1.4M12.2 6.2l-1.4-1.4M3 21l9-9"
-);
-icon!(
-    PAN,
-    "M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"
 );
 icon!(
     MODELS,

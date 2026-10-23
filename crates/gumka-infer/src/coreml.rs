@@ -921,13 +921,24 @@ impl MultiArray {
         }?;
         let array = Self(array);
         let strides = array.strides();
+        let (starts, len, step) = rows(shape, &strides);
         let handler = RcBlock::new(|bytes: NonNull<std::ffi::c_void>, size: isize, _strides| {
-            let base = bytes.as_ptr().cast::<f32>();
-            let capacity = size as usize / 4;
-            for (i, offset) in offsets(shape, &strides).enumerate() {
-                if offset < capacity {
-                    // SAFETY: the handler's buffer holds `capacity` floats; offsets are bounded.
-                    unsafe { base.add(offset).write(data[i]) };
+            // SAFETY: Core ML passes the array's writable float32 bytes, `size` long, for this
+            // call; nothing else touches them meanwhile.
+            let floats = unsafe {
+                std::slice::from_raw_parts_mut(bytes.as_ptr().cast::<f32>(), size as usize / 4)
+            };
+            for (row, &start) in starts.iter().enumerate() {
+                let values = &data[row * len..(row + 1) * len];
+                match floats.get_mut(start..start + len).filter(|_| step == 1) {
+                    Some(dst) => dst.copy_from_slice(values),
+                    None => {
+                        for (i, &v) in values.iter().enumerate() {
+                            if let Some(dst) = floats.get_mut(start + i * step) {
+                                *dst = v;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -963,29 +974,35 @@ impl MultiArray {
                 )));
             }
         };
+        let decode: fn(&[u8]) -> f32 = match data_type {
+            MLMultiArrayDataType::Float16 => |raw| f16_to_f32(u16::from_ne_bytes([raw[0], raw[1]])),
+            MLMultiArrayDataType::Float32 => {
+                |raw| f32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]])
+            }
+            MLMultiArrayDataType::Int32 => {
+                |raw| i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]) as f32
+            }
+            _ => |raw| f64::from_ne_bytes(raw.try_into().unwrap_or([0; 8])) as f32,
+        };
+        let (starts, len, step) = rows(&shape, &strides);
         let out = std::cell::RefCell::new(Vec::with_capacity(shape.iter().product()));
         let handler = RcBlock::new(|bytes: NonNull<std::ffi::c_void>, size: isize| {
             // SAFETY: Core ML passes the array's bytes, `size` long, for this call.
             let bytes =
                 unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), size as usize) };
             let mut out = out.borrow_mut();
-            for offset in offsets(&shape, &strides) {
-                let Some(raw) = bytes.get(offset * width..(offset + 1) * width) else {
-                    out.push(f32::NAN);
-                    continue;
-                };
-                out.push(match data_type {
-                    MLMultiArrayDataType::Float16 => {
-                        f16_to_f32(u16::from_ne_bytes([raw[0], raw[1]]))
+            for &start in &starts {
+                // A row of contiguous values (the usual case) is read in one go.
+                let whole = bytes.get(start * width..(start + len) * width);
+                match whole.filter(|_| step == 1) {
+                    Some(row) => out.extend(row.chunks_exact(width).map(decode)),
+                    None => {
+                        for i in 0..len {
+                            let at = (start + i * step) * width;
+                            out.push(bytes.get(at..at + width).map_or(f32::NAN, decode));
+                        }
                     }
-                    MLMultiArrayDataType::Float32 => {
-                        f32::from_ne_bytes(raw.try_into().unwrap_or([0; 4]))
-                    }
-                    MLMultiArrayDataType::Int32 => {
-                        i32::from_ne_bytes(raw.try_into().unwrap_or([0; 4])) as f32
-                    }
-                    _ => f64::from_ne_bytes(raw.try_into().unwrap_or([0; 8])) as f32,
-                });
+                }
             }
         });
         // SAFETY: the handler is called synchronously with the array's bytes.
@@ -1000,6 +1017,18 @@ fn numbers(array: &NSArray<NSNumber>) -> Vec<usize> {
         .iter()
         .map(|n| n.integerValue().max(0) as usize)
         .collect()
+}
+
+/// Where each innermost row of `shape` starts (in elements, row-major order), the rows'
+/// length, and the step between their values: rows let the arrays be copied a row at a time,
+/// where Core ML pads only between rows.
+fn rows(shape: &[usize], strides: &[usize]) -> (Vec<usize>, usize, usize) {
+    let (Some((&len, outer)), Some((&step, outer_strides))) =
+        (shape.split_last(), strides.split_last())
+    else {
+        return (vec![0], 1, 1);
+    };
+    (offsets(outer, outer_strides).collect(), len, step)
 }
 
 /// Element offsets (in elements, not bytes) of every index of `shape`, in row-major order.
@@ -1099,6 +1128,36 @@ mod tests {
         let data: Vec<f32> = (0..24).map(|i| i as f32 * 0.5).collect();
         let array = MultiArray::from_f32(&[2, 3, 4], &data).unwrap();
         assert_eq!(array.shape(), vec![2, 3, 4]);
+        assert_eq!(array.to_f32().unwrap(), data);
+    }
+
+    #[test]
+    fn rows_cover_every_offset_in_order() {
+        for (shape, strides) in [
+            (vec![1, 3, 4, 5], vec![60, 20, 5, 1]),
+            // Rows padded to 8 values, as Core ML lays out some outputs.
+            (vec![1, 3, 4, 5], vec![96, 32, 8, 1]),
+            (vec![2, 3], vec![1, 2]),
+            (vec![7], vec![1]),
+        ] {
+            let (starts, len, step) = rows(&shape, &strides);
+            let by_rows: Vec<usize> = starts
+                .iter()
+                .flat_map(|&s| (0..len).map(move |i| s + i * step))
+                .collect();
+            let all: Vec<usize> = offsets(&shape, &strides).collect();
+            assert_eq!(by_rows, all, "{shape:?} {strides:?}");
+        }
+        assert_eq!(rows(&[], &[]), (vec![0], 1, 1));
+    }
+
+    #[test]
+    fn a_tile_sized_array_round_trips() {
+        let shape = [1, 3, 512, 512];
+        let data: Vec<f32> = (0..3 * 512 * 512)
+            .map(|i| (i % 1000) as f32 / 999.0)
+            .collect();
+        let array = MultiArray::from_f32(&shape, &data).unwrap();
         assert_eq!(array.to_f32().unwrap(), data);
     }
 

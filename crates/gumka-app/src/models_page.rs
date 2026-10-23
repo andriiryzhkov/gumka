@@ -52,15 +52,9 @@ pub fn load_rows() -> Vec<ModelRow> {
         .collect()
 }
 
-/// `inpainter` and `segmenter` are the worker's model states (Erase and Select object).
-pub fn show(ui: &mut Ui, rows: &[ModelRow], inpainter: &Status, segmenter: &Status) {
-    let status_of = |row: &ModelRow| {
-        if row.info.tool == "Erase" {
-            inpainter
-        } else {
-            segmenter
-        }
-    };
+/// `status` is the worker's state of a model, for those it has loaded or tried to.
+pub fn show<'a>(ui: &mut Ui, rows: &[ModelRow], status: &dyn Fn(&ModelInfo) -> Option<&'a Status>) {
+    let status_of = |row: &ModelRow| status(row.info);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -79,9 +73,9 @@ pub fn show(ui: &mut Ui, rows: &[ModelRow], inpainter: &Status, segmenter: &Stat
                     );
                     ui.label(
                         RichText::new(
-                            "Each tool uses one model. Models that run on this Mac come with \
-                             Gumka, so they work offline from the start. Only models whose \
-                             license allows commercial use are included.",
+                            "Models that run on this Mac come with Gumka, so every tool works \
+                             offline from the start. Only models whose license allows \
+                             commercial use are included.",
                         )
                         .size(13.0)
                         .color(Color32::from_gray(0xb5)),
@@ -114,7 +108,7 @@ fn columns(width: f32) -> [f32; 5] {
     [fixed[0], model, fixed[2], fixed[3], fixed[4]]
 }
 
-fn table<'a>(ui: &mut Ui, rows: &[ModelRow], status_of: &impl Fn(&ModelRow) -> &'a Status) {
+fn table<'a>(ui: &mut Ui, rows: &[ModelRow], status_of: &impl Fn(&ModelRow) -> Option<&'a Status>) {
     Frame::NONE
         .stroke(Stroke::new(1.0, Color32::from_gray(0x34)))
         .corner_radius(CornerRadius::same(8))
@@ -153,7 +147,7 @@ fn table<'a>(ui: &mut Ui, rows: &[ModelRow], status_of: &impl Fn(&ModelRow) -> &
         });
 }
 
-fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: &Status) {
+fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: Option<&Status>) {
     let info = row.info;
     Frame::NONE
         .inner_margin(Margin {
@@ -194,7 +188,7 @@ fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: &Status) {
                 });
                 cell(ui, widths[3], |ui| {
                     let runs_on = match status {
-                        Status::Ready { runs_on, .. } => format!("This Mac · {runs_on}"),
+                        Some(Status::Ready { runs_on, .. }) => format!("This Mac · {runs_on}"),
                         _ => "This Mac · Core ML".into(),
                     };
                     ui.label(RichText::new(runs_on).size(12.5).color(TEXT));
@@ -212,7 +206,9 @@ fn model_row(ui: &mut Ui, row: &ModelRow, widths: &[f32; 5], status: &Status) {
         });
 }
 
-fn status_line(ui: &mut Ui, row: &ModelRow, status: &Status) {
+/// The model's state: missing or incomplete on disk, else the worker's (`None`: not loaded
+/// yet, and found complete).
+fn status_line(ui: &mut Ui, row: &ModelRow, status: Option<&Status>) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         if let Err(reason) = &row.path {
@@ -227,15 +223,20 @@ fn status_line(ui: &mut Ui, row: &ModelRow, status: &Status) {
             return;
         }
         match status {
-            Status::Ready { .. } => {
+            Some(Status::Ready { .. }) => {
                 widgets::dot(ui, OK);
                 ui.label(RichText::new("Ready").size(12.5).color(TEXT));
             }
-            Status::Loading => {
+            None | Some(Status::NotLoaded) => {
+                widgets::dot(ui, OK);
+                ui.label(RichText::new("Included").size(12.5).color(TEXT))
+                    .on_hover_text("Loads when the tool first runs");
+            }
+            Some(Status::Loading) => {
                 ui.spinner();
                 ui.label(RichText::new("Loading…").size(12.5).color(TEXT_LABEL));
             }
-            Status::Unavailable(reason) => {
+            Some(Status::Unavailable(reason)) => {
                 widgets::dot(ui, WARN);
                 ui.label(RichText::new("Unavailable").size(12.5).color(WARN))
                     .on_hover_text(reason);

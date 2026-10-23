@@ -22,10 +22,26 @@ struct Edit {
     label: String,
     /// Shown on the right of the history row: the model and time for an erase.
     detail: String,
-    pixels: Option<(Rect, Rgb16)>,
+    pixels: Option<Pixels>,
     mask: Option<(Rect, Mask)>,
     /// The mask was inverted, which inverting again undoes: nothing needs storing.
     inverted: bool,
+}
+
+/// What an edit keeps of the pixels.
+enum Pixels {
+    /// A region, at the picture's size.
+    Region(Rect, Rgb16),
+    /// The whole picture at another size (an upscale), with its alpha and mask: swapped in as
+    /// a whole. Edits recorded after it are undone before it and redone after it, so their
+    /// regions always meet the size they were made at.
+    Whole(Box<Whole>),
+}
+
+struct Whole {
+    pixels: Rgb16,
+    alpha: Option<Vec<u16>>,
+    mask: Mask,
 }
 
 /// Regions that changed and need redrawing.
@@ -33,6 +49,8 @@ struct Edit {
 pub struct Changed {
     pub pixels: Option<Rect>,
     pub mask: Option<Rect>,
+    /// The picture changed size: everything is drawn anew.
+    pub resized: bool,
 }
 
 /// One row of the History panel.
@@ -51,6 +69,9 @@ pub struct Document {
     /// the toolbar offers Save & Return.
     pub sent: bool,
     pub picture: Picture,
+    /// Whether colors beyond P3 may be clipped in what models change (see
+    /// [`Self::may_clip_beyond_p3`]); worked out when first asked.
+    may_clip_beyond_p3: std::cell::OnceCell<bool>,
     /// Brush strokes are painted straight into it, and count for [`Self::has_mask`] once they
     /// are recorded with [`Self::push_stroke`].
     pub mask: Mask,
@@ -66,8 +87,8 @@ pub struct Document {
     next_id: u64,
     /// Id of the newest pixel edit when last saved (0 = as opened).
     saved: u64,
-    /// Renewed whenever the pixels change (erase, undo, redo), so cached work on them, such
-    /// as the selection model's encoding, knows when it is stale. Unique across documents.
+    /// Renewed whenever the pixels change (erase, upscale, undo, redo), so cached work on them,
+    /// such as the selection model's encoding, knows when it is stale. Unique across documents.
     generation: u64,
 }
 
@@ -83,6 +104,7 @@ impl Document {
             opened_as: file_name(&path),
             path,
             sent: false,
+            may_clip_beyond_p3: std::cell::OnceCell::new(),
             picture,
             mask: Mask::new(width, height),
             has_mask: false,
@@ -94,6 +116,15 @@ impl Document {
             saved: 0,
             generation: next_generation(),
         }
+    }
+
+    /// Whether models see this picture converted to Display P3 while its colors may reach
+    /// beyond P3, so those may be clipped in what they change. The profile stays the same
+    /// through every edit, so this is worked out once.
+    pub fn may_clip_beyond_p3(&self) -> bool {
+        *self
+            .may_clip_beyond_p3
+            .get_or_init(|| gumka_core::color::may_clip_beyond_p3(self.picture.icc_profile()))
     }
 
     /// Size in pixels. Valid even while the pixels are away at the worker.
@@ -238,11 +269,59 @@ impl Document {
         let changed = Changed {
             pixels: Some(rect),
             mask: mask.as_ref().map(|(r, _)| *r),
+            resized: false,
         };
-        self.push("Erase", &detail, Some((rect, old)), mask);
+        self.push("Erase", &detail, Some(Pixels::Region(rect, old)), mask);
         self.has_mask = false;
         self.generation = next_generation();
         changed
+    }
+
+    /// Records a change of size (an upscale): `pixels` and `alpha` replace the picture's, the
+    /// mask is scaled to match, so what was painted still marks the same things, and undo
+    /// brings back the picture as it was. Refused, changing nothing, when the alpha doesn't fit
+    /// the picture.
+    pub fn push_resize(
+        &mut self,
+        mut pixels: Rgb16,
+        mut alpha: Option<Vec<u16>>,
+        label: &str,
+        detail: &str,
+    ) -> Result<Changed, String> {
+        self.picture
+            .swap_pixels(&mut pixels, &mut alpha)
+            .map_err(|e| e.to_string())?;
+        let size = self.picture.pixels.dimensions();
+        let mask = if self.has_mask {
+            scale_mask(&self.mask, size)
+        } else {
+            Mask::new(size.0, size.1)
+        };
+        let mask = std::mem::replace(&mut self.mask, mask);
+        (self.width, self.height) = size;
+        self.record(Edit {
+            id: 0,
+            label: label.to_owned(),
+            detail: detail.to_owned(),
+            pixels: Some(Pixels::Whole(Box::new(Whole {
+                pixels,
+                alpha,
+                mask,
+            }))),
+            mask: None,
+            inverted: false,
+        });
+        self.generation = next_generation();
+        Ok(self.resized())
+    }
+
+    /// Everything changed, at a new size.
+    fn resized(&self) -> Changed {
+        Changed {
+            pixels: Some(self.whole()),
+            mask: Some(self.whole()),
+            resized: true,
+        }
     }
 
     pub fn undo(&mut self) -> Changed {
@@ -254,7 +333,6 @@ impl Document {
     }
 
     fn step(&mut self, undo: bool) -> Changed {
-        let whole = self.whole();
         let (from, to) = if undo {
             (&mut self.undo, &mut self.redo)
         } else {
@@ -264,11 +342,38 @@ impl Document {
             return Changed::default();
         };
         let mut changed = Changed::default();
-        if let Some((rect, pixels)) = &mut edit.pixels {
-            swap_region(&mut self.picture.pixels, *rect, pixels);
-            changed.pixels = Some(*rect);
-            self.generation = next_generation();
+        match &mut edit.pixels {
+            Some(Pixels::Region(rect, pixels)) => {
+                swap_region(&mut self.picture.pixels, *rect, pixels);
+                changed.pixels = Some(*rect);
+                self.generation = next_generation();
+            }
+            Some(Pixels::Whole(whole)) => {
+                // It came from this picture, so its alpha fits; if it ever didn't, nothing
+                // changes and the edit stays where it was.
+                if let Err(e) = self
+                    .picture
+                    .swap_pixels(&mut whole.pixels, &mut whole.alpha)
+                {
+                    eprintln!("{} can't be undone or redone: {e}", edit.label);
+                    from.push(edit);
+                    return Changed::default();
+                }
+                std::mem::swap(&mut self.mask, &mut whole.mask);
+                (self.width, self.height) = self.picture.pixels.dimensions();
+                let all = Rect::new(0, 0, self.width, self.height);
+                self.has_mask = any_set(&self.mask, all);
+                self.generation = next_generation();
+                changed = Changed {
+                    pixels: Some(all),
+                    mask: Some(all),
+                    resized: true,
+                };
+            }
+            None => {}
         }
+        // The stacks are borrowed: the size from the fields, not `whole()`.
+        let whole = Rect::new(0, 0, self.width, self.height);
         if let Some((rect, mask)) = &mut edit.mask {
             swap_mask(&mut self.mask, *rect, mask);
             changed.mask = Some(*rect);
@@ -291,7 +396,7 @@ impl Document {
         &mut self,
         label: &str,
         detail: &str,
-        pixels: Option<(Rect, Rgb16)>,
+        pixels: Option<Pixels>,
         mask: Option<(Rect, Mask)>,
     ) {
         self.record(Edit {
@@ -383,6 +488,27 @@ fn invert(mask: &mut Mask) {
     }
 }
 
+/// `mask` at `size`, nearest neighbour: each new pixel takes the value under its center. A
+/// large mask (up to 256 MP after an upscale) is split over the cores by rows.
+fn scale_mask(mask: &Mask, (width, height): (u32, u32)) -> Mask {
+    let (w, h) = (u64::from(mask.width()), u64::from(mask.height()));
+    let at =
+        |i: u32, from: u64, to: u32| ((u64::from(i) * 2 + 1) * from / (u64::from(to) * 2)) as u32;
+    let xs: Vec<u32> = (0..width).map(|x| at(x, w, width)).collect();
+    let mut scaled = Mask::new(width, height);
+    let row = width as usize;
+    let read = u64::from(width) * u64::from(height);
+    gumka_core::by_rows(scaled.as_mut(), row, read, |first, rows| {
+        for (r, out) in rows.chunks_exact_mut(row).enumerate() {
+            let source = at((first + r) as u32, h, height);
+            for (out, &x) in out.iter_mut().zip(&xs) {
+                *out = mask.get_pixel(x, source).0[0];
+            }
+        }
+    });
+    scaled
+}
+
 fn image_crop(mask: &Mask, rect: Rect) -> Mask {
     gumka_core::image::imageops::crop_imm(mask, rect.x, rect.y, rect.width, rect.height).to_image()
 }
@@ -409,7 +535,7 @@ fn swap_mask(mask: &mut Mask, rect: Rect, patch: &mut Mask) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gumka_core::image::Luma;
+    use gumka_core::image::{Luma, Rgb};
 
     fn document(width: u32, height: u32) -> Document {
         let picture = Picture::from_pixels(Rgb16::new(width, height), 16);
@@ -553,6 +679,142 @@ mod tests {
         assert_eq!(doc.mask.get_pixel(1, 0).0[0], 0);
         doc.undo();
         assert_eq!(doc.mask, before);
+    }
+
+    /// Pixels that say where they are.
+    fn pixels(w: u32, h: u32) -> Rgb16 {
+        Rgb16::from_fn(w, h, |x, y| Rgb([x as u16 * 100, y as u16 * 100, 7]))
+    }
+
+    /// Twice as large, as a model that only replicates pixels would make them.
+    fn doubled(p: &Rgb16) -> Rgb16 {
+        Rgb16::from_fn(p.width() * 2, p.height() * 2, |x, y| {
+            *p.get_pixel(x / 2, y / 2)
+        })
+    }
+
+    /// An erase as the app records it: new pixels in `rect`, the old ones into the history.
+    fn erase(doc: &mut Document, rect: Rect) {
+        let old = gumka_core::crop(&doc.picture.pixels, rect);
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                doc.picture.pixels.put_pixel(x, y, Rgb([1, 2, 3]));
+            }
+        }
+        doc.push_erase(rect, old, String::new());
+    }
+
+    fn picture_document(w: u32, h: u32) -> Document {
+        Document::new(
+            PathBuf::from("test.png"),
+            Picture::from_pixels(pixels(w, h), 16),
+        )
+    }
+
+    #[test]
+    fn an_upscale_is_undone_and_redone_with_the_edits_around_it() {
+        let mut doc = picture_document(4, 3);
+        erase(&mut doc, Rect::new(0, 0, 1, 1));
+        let before = doc.picture.pixels.clone();
+        let big = doubled(&before);
+        let changed = doc
+            .push_resize(big.clone(), None, "Upscale 2×", "RealPLKSR 2× · 1.0 s")
+            .unwrap();
+        assert!(changed.resized);
+        assert_eq!((doc.size(), doc.mask.dimensions()), ((8, 6), (8, 6)));
+        erase(&mut doc, Rect::new(5, 4, 2, 2));
+        let after = doc.picture.pixels.clone();
+
+        assert!(!doc.undo().resized, "the erase made at the new size");
+        assert_eq!(doc.picture.pixels, big);
+        assert!(doc.undo().resized);
+        assert_eq!(doc.picture.pixels, before);
+        assert_eq!((doc.size(), doc.mask.dimensions()), ((4, 3), (4, 3)));
+        doc.undo();
+        doc.redo();
+        assert_eq!(doc.picture.pixels, before);
+        assert!(doc.redo().resized);
+        assert_eq!(doc.picture.pixels, big);
+        doc.redo();
+        assert_eq!(doc.picture.pixels, after);
+        let rows: Vec<String> = doc.history().into_iter().map(|r| r.label).collect();
+        assert_eq!(rows, ["Open test.png", "Erase", "Upscale 2×", "Erase"]);
+    }
+
+    #[test]
+    fn a_painted_mask_grows_with_the_picture_and_comes_back() {
+        let mut doc = picture_document(4, 3);
+        stroke(&mut doc, 1, 1, false);
+        let painted = doc.mask.clone();
+        doc.push_resize(doubled(&doc.picture.pixels), None, "Upscale 2×", "")
+            .unwrap();
+        assert!(doc.has_mask());
+        let set: Vec<(u32, u32)> = doc
+            .mask
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p.0[0] != 0)
+            .map(|(x, y, _)| (x, y))
+            .collect();
+        assert_eq!(set, [(2, 2), (3, 2), (2, 3), (3, 3)]);
+        doc.undo();
+        assert_eq!(doc.mask, painted);
+        assert!(doc.has_mask());
+    }
+
+    #[test]
+    fn an_upscale_is_unsaved_work_and_new_pixels() {
+        let mut doc = picture_document(4, 3);
+        let opened = doc.generation();
+        doc.push_resize(doubled(&doc.picture.pixels), None, "Upscale 2×", "")
+            .unwrap();
+        assert!(doc.is_dirty());
+        let upscaled = doc.generation();
+        assert_ne!(upscaled, opened);
+        doc.mark_saved();
+        assert!(!doc.is_dirty());
+        doc.undo();
+        assert!(doc.is_dirty(), "the saved file is the larger one");
+        assert!(![opened, upscaled].contains(&doc.generation()));
+        doc.redo();
+        assert!(!doc.is_dirty());
+    }
+
+    #[test]
+    fn pixels_whose_alpha_doesnt_fit_are_refused() {
+        let mut doc = picture_document(4, 3);
+        let big = doubled(&doc.picture.pixels);
+        assert!(
+            doc.push_resize(big, Some(vec![0; 48]), "Upscale 2×", "")
+                .is_err()
+        );
+        assert_eq!(doc.size(), (4, 3));
+        assert!(!doc.can_undo() && !doc.is_dirty());
+    }
+
+    #[test]
+    fn a_mask_scales_to_any_size_by_its_nearest_pixel() {
+        let mut mask = Mask::new(3, 2);
+        mask.put_pixel(0, 0, Luma([10]));
+        mask.put_pixel(2, 1, Luma([20]));
+        let scaled = scale_mask(&mask, (7, 5));
+        assert_eq!(scaled.get_pixel(0, 0).0[0], 10);
+        assert_eq!(scaled.get_pixel(6, 4).0[0], 20);
+        assert_eq!(scaled.get_pixel(3, 2).0[0], 0);
+        assert_eq!(scale_mask(&scaled, (3, 2)), mask, "and back");
+    }
+
+    /// A mask large enough to be split over the cores scales as one row after another would.
+    #[test]
+    fn a_large_mask_scales_the_same_on_many_threads() {
+        let mask = Mask::from_fn(301, 257, |x, y| Luma([((x * 7 + y * 13) % 256) as u8]));
+        let (w, h) = (751, 642);
+        assert!(u64::from(w * h) >= gumka_core::PARALLEL_FROM);
+        let scaled = scale_mask(&mask, (w, h));
+        let nearest = |i: u32, from: u32, to: u32| (2 * i + 1) * from / (2 * to);
+        for (x, y, p) in scaled.enumerate_pixels() {
+            let want = mask.get_pixel(nearest(x, 301, w), nearest(y, 257, h));
+            assert_eq!(p, want, "at {x},{y}");
+        }
     }
 
     #[test]

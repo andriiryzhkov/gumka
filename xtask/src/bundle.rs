@@ -342,15 +342,10 @@ fn write_licenses(
                 model.license, model.name
             )
         })?;
-        let notice = format!(
-            "{name}\nUsed for: {tool}\nSource: {source} ({url})\nLicense: {license}\n\n{text}",
-            name = model.name,
-            tool = model.tool,
-            source = model.source,
-            url = model.source_url,
-            license = model.license,
-        );
-        write(&dir.join(format!("models/{}.txt", model.id)), &notice)?;
+        write(
+            &dir.join(format!("models/{}.txt", model.id)),
+            &model_notice(model, &text),
+        )?;
     }
     let crates = write_crate_licenses(root, universal, &dir.join("crates"))?;
     let readme = format!(
@@ -366,6 +361,23 @@ fn write_licenses(
          \x20 with their license files\n"
     );
     write(&dir.join("README.txt"), &readme)
+}
+
+/// A bundled model's license file: what the model is and where it comes from, then its license,
+/// with the copyright lines that licenses such as MIT go with.
+fn model_notice(model: &models::ModelInfo, text: &str) -> String {
+    let mut copyright = model.copyright.join("\n");
+    if !copyright.is_empty() {
+        copyright += "\n\n";
+    }
+    format!(
+        "{name}\nUsed for: {tool}\nSource: {source} ({url})\nLicense: {license}\n\n{copyright}{text}",
+        name = model.name,
+        tool = model.tool,
+        source = model.source,
+        url = model.source_url,
+        license = model.license,
+    )
 }
 
 /// Copies the license files of every crate the app is built from (normal dependencies, not
@@ -635,4 +647,32 @@ fn read_text(path: &Path) -> Result<String, String> {
 
 fn size_of(path: &Path) -> String {
     crate::size(models::disk_size(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_notice_carries_its_copyright_before_the_license() {
+        let upscaler = models::model(models::UPSCALE_2X).unwrap();
+        let notice = model_notice(upscaler, "Permission is hereby granted…");
+        assert!(
+            notice.starts_with("RealPLKSR 2×\nUsed for: Upscale\n"),
+            "{notice}"
+        );
+        assert!(
+            notice.ends_with(
+                "License: MIT\n\nCopyright (c) 2024 Dongheon Lee\n\nPermission is hereby granted…"
+            ),
+            "{notice}"
+        );
+
+        let lama = models::model(models::LAMA).unwrap();
+        let notice = model_notice(lama, "Apache License");
+        assert!(
+            notice.ends_with("License: Apache-2.0\n\nApache License"),
+            "{notice}"
+        );
+    }
 }

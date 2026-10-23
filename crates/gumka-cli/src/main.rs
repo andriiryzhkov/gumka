@@ -8,6 +8,8 @@
 //!   re-encoded) and metadata.
 //! - `gumka-cli select IN OUT_MASK --click X,Y` selects the object under the click with SAM
 //!   and saves the mask, ready for `erase`.
+//! - `gumka-cli upscale IN OUT --scale FACTOR` makes IN 1.25 to 4 times larger with RealPLKSR
+//!   and saves OUT, with IN's bit depth, profile and metadata (EXIF's size updated).
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -18,11 +20,13 @@ use gumka_core::Mask;
 use gumka_core::image::{DynamicImage, ImageFormat, ImageReader, Luma};
 use gumka_core::picture::Picture;
 use gumka_core::select::Click;
+use gumka_core::upscale::{Factor, largest_factor, result_size};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 const USAGE: &str = "usage: gumka-cli erase IN MASK OUT [--units cpu|gpu|ane|all]
        gumka-cli select IN OUT_MASK --click X,Y [--click X,Y] [--exclude X,Y] [--units ...]
+       gumka-cli upscale IN OUT --scale FACTOR [--units cpu|gpu]
 
   IN, OUT    TIFF, PNG or JPEG. OUT keeps IN's bit depth (JPEG: 8-bit, re-encoded), ICC
              profile and metadata.
@@ -31,7 +35,12 @@ const USAGE: &str = "usage: gumka-cli erase IN MASK OUT [--units cpu|gpu|ane|all
              transparent and black ones are kept. Use PNG: in a JPEG, noise near black
              counts as erase.
   --click    a point on the object to select, in pixels of IN as stored.
-  --exclude  a point to leave out of the selection.";
+  --exclude  a point to leave out of the selection.
+  --scale    how many times larger: 1.25 to 4 in steps of 0.25. 2 and 4 are the models' own
+             output; others are made with the next one up and scaled down. The result may be
+             at most 256 MP and 65,535 px a side.
+  --units    where the model runs. RealPLKSR (upscale) gives wrong results on the Neural
+             Engine, so it takes cpu or gpu only.";
 
 fn main() -> ExitCode {
     match run() {
@@ -46,7 +55,7 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let command = match args.next().as_deref() {
-        Some(c @ ("erase" | "select")) => c.to_owned(),
+        Some(c @ ("erase" | "select" | "upscale")) => c.to_owned(),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return Ok(());
@@ -56,9 +65,11 @@ fn run() -> Result<()> {
     let mut paths = Vec::new();
     let mut clicks = Vec::new();
     let mut units = "gpu".to_string();
+    let mut factor = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--units" => units = args.next().ok_or(USAGE)?,
+            "--scale" => factor = Some(scale(&args.next().unwrap_or_default())?),
             "--click" | "--exclude" => {
                 let value = args.next().ok_or(USAGE)?;
                 let (x, y) = value.split_once(',').ok_or(USAGE)?;
@@ -70,6 +81,22 @@ fn run() -> Result<()> {
             }
             _ => paths.push(PathBuf::from(arg)),
         }
+    }
+    check_units(&command, &units)?;
+    if command == "upscale" {
+        let [input, output] = <[PathBuf; 2]>::try_from(paths).map_err(|_| USAGE)?;
+        let factor = factor.ok_or_else(|| format!("upscale needs --scale\n\n{USAGE}"))?;
+        let mut picture = Picture::open(&input)?;
+        check_result_size((picture.width(), picture.height()), factor)?;
+        backend::upscale(&mut picture, factor, &units)?;
+        let t = Instant::now();
+        picture.save(&output)?;
+        println!(
+            "saved {} ({:.2}s)",
+            output.display(),
+            t.elapsed().as_secs_f64()
+        );
+        return Ok(());
     }
     if command == "select" {
         let [input, output] = <[PathBuf; 2]>::try_from(paths).map_err(|_| USAGE)?;
@@ -107,6 +134,47 @@ fn run() -> Result<()> {
         t.elapsed().as_secs_f64()
     );
     Ok(())
+}
+
+/// `--scale`'s value: 1.25 to 4, in quarter steps.
+fn scale(value: &str) -> Result<Factor> {
+    let quarters = value
+        .trim_end_matches(['x', '×'])
+        .parse::<f64>()
+        .ok()
+        .map(|v| v * 4.0);
+    quarters
+        .filter(|q| q.fract() == 0.0)
+        .and_then(|q| Factor::from_quarters(q as u32))
+        .ok_or_else(|| format!("--scale takes 1.25 to 4 in steps of 0.25, not {value:?}").into())
+}
+
+/// `--units` names compute units there are; `upscale` refuses the Neural Engine, where RealPLKSR
+/// gives wrong results.
+fn check_units(command: &str, units: &str) -> Result<()> {
+    let upscale = command == "upscale";
+    match units {
+        "cpu" | "gpu" => Ok(()),
+        "ane" | "all" if upscale => {
+            Err("RealPLKSR gives wrong results on the Neural Engine; use --units gpu or cpu".into())
+        }
+        "ane" | "all" => Ok(()),
+        other if upscale => Err(format!("--units takes cpu or gpu, not {other:?}").into()),
+        other => Err(format!("--units takes cpu, gpu, ane or all, not {other:?}").into()),
+    }
+}
+
+/// A picture of `size` must stay within the result's limits at `factor`. Too large, it says to
+/// use a smaller scale, or that none is small enough.
+fn check_result_size((width, height): (u32, u32), factor: Factor) -> Result<()> {
+    let Err(why) = result_size(width, height, factor) else {
+        return Ok(());
+    };
+    let advice = match largest_factor(width, height) {
+        Some(_) => "use a smaller --scale",
+        None => "the picture is already as large as upscale can make it",
+    };
+    Err(format!("{why}; {advice}").into())
 }
 
 /// The erase marks of a mask image: opaque pixels (alpha above zero) with any channel above
@@ -173,8 +241,9 @@ mod backend {
     use gumka_core::Mask;
     use gumka_core::picture::Picture;
     use gumka_core::select::Click;
+    use gumka_core::upscale::{Alpha, Factor};
     use gumka_infer::coreml::ComputeUnits;
-    use gumka_infer::{CoreMlLama, CoreMlSam, models};
+    use gumka_infer::{CoreMlLama, CoreMlSam, CoreMlUpscaler, models};
 
     use super::{Result, USAGE};
 
@@ -216,6 +285,47 @@ mod backend {
         Ok(())
     }
 
+    pub fn upscale(picture: &mut Picture, factor: Factor, unit_name: &str) -> Result<()> {
+        let (w, h) = (picture.width(), picture.height());
+        let t = Instant::now();
+        let scale = factor.model_scale();
+        let mut model = CoreMlUpscaler::load(scale, &models::cache_dir(), units(unit_name)?)?;
+        let name = &models::model(models::upscaler_id(scale)?)?.name;
+        println!("{name} loaded ({:.2}s)", t.elapsed().as_secs_f64());
+
+        let t = Instant::now();
+        let profile = picture.icc_profile().map(<[u8]>::to_vec);
+        let mut shown = 0;
+        let alpha = picture.alpha().map(|values| Alpha {
+            values,
+            premultiplied: picture.associated_alpha(),
+        });
+        let result = gumka_core::upscale::upscale(
+            &picture.pixels,
+            alpha,
+            factor,
+            &mut model,
+            profile.as_deref(),
+            &mut |done, total| {
+                let tenths = done * 10 / total.max(1);
+                if tenths > shown {
+                    shown = tenths;
+                    eprintln!("{}% ({done} of {total} tiles)", tenths * 10);
+                }
+                true
+            },
+        )?
+        .ok_or("stopped")?;
+        let (rw, rh) = result.pixels.dimensions();
+        let (mut pixels, mut alpha) = (result.pixels, result.alpha);
+        picture.swap_pixels(&mut pixels, &mut alpha)?;
+        println!(
+            "upscaled {w}x{h} to {rw}x{rh} ({:.1}s)",
+            t.elapsed().as_secs_f64()
+        );
+        Ok(())
+    }
+
     pub fn select(picture: &Picture, clicks: &[Click], unit_name: &str) -> Result<Mask> {
         if !clicks.iter().any(|c| c.include) {
             return Err(format!("select needs at least one --click\n\n{USAGE}").into());
@@ -247,6 +357,7 @@ mod backend {
     use gumka_core::Mask;
     use gumka_core::picture::Picture;
     use gumka_core::select::Click;
+    use gumka_core::upscale::Factor;
 
     use super::Result;
 
@@ -257,6 +368,10 @@ mod backend {
     }
 
     pub fn select(_: &Picture, _: &[Click], _: &str) -> Result<Mask> {
+        Err(NONE.into())
+    }
+
+    pub fn upscale(_: &mut Picture, _: Factor, _: &str) -> Result<()> {
         Err(NONE.into())
     }
 }
@@ -299,6 +414,64 @@ mod tests {
             GrayImage::from_raw(2, 1, vec![0, 9]).unwrap(),
         ));
         assert_eq!(marks(&plain), [0, 255]);
+    }
+
+    #[test]
+    fn scales_are_quarter_steps_from_one_and_a_quarter_to_four() {
+        assert_eq!(scale("2").unwrap(), Factor::X2);
+        assert_eq!(scale("4x").unwrap(), Factor::X4);
+        assert_eq!(scale("2.5").unwrap().to_string(), "2.5×");
+        assert_eq!(scale("1.25×").unwrap().to_string(), "1.25×");
+        for wrong in ["1", "2.3", "5", "", "two"] {
+            assert!(scale(wrong).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn upscale_refuses_the_neural_engine() {
+        for units in ["ane", "all"] {
+            let error = check_units("upscale", units).unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "RealPLKSR gives wrong results on the Neural Engine; use --units gpu or cpu"
+            );
+            assert!(check_units("erase", units).is_ok() && check_units("select", units).is_ok());
+        }
+        for command in ["erase", "select", "upscale"] {
+            assert!(check_units(command, "gpu").is_ok() && check_units(command, "cpu").is_ok());
+        }
+    }
+
+    /// An unknown unit gets an error that names it, not the whole usage.
+    #[test]
+    fn unknown_units_are_named() {
+        let error = |command| check_units(command, "bogus").unwrap_err().to_string();
+        assert_eq!(
+            error("erase"),
+            "--units takes cpu, gpu, ane or all, not \"bogus\""
+        );
+        assert_eq!(error("upscale"), "--units takes cpu or gpu, not \"bogus\"");
+    }
+
+    #[test]
+    fn a_result_too_large_says_to_use_a_smaller_scale() {
+        assert!(check_result_size((20000, 2), Factor::X2).is_ok());
+        let error = check_result_size((20000, 2), Factor::X4)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "4× would make it 80,000 px long, more than the 65,535 px limit; use a smaller --scale"
+        );
+        // Not even 1.25× fits: no smaller scale to use.
+        let error = check_result_size((60000, 2), Factor::X2)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "2× would make it 120,000 px long, more than the 65,535 px limit; the picture is \
+             already as large as upscale can make it"
+        );
     }
 
     #[test]

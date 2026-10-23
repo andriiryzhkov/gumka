@@ -28,6 +28,17 @@ pub const REGISTRY: &str = include_str!("../../../models.toml");
 /// Registry ids of the models the app uses.
 pub const LAMA: &str = "lama";
 pub const SAM: &str = "sam2.1-small";
+pub const UPSCALE_2X: &str = "realplksr-2x";
+pub const UPSCALE_4X: &str = "realplksr-4x";
+
+/// The registry id of the upscaler that makes pictures `scale` times larger.
+pub fn upscaler_id(scale: u32) -> Result<&'static str, String> {
+    match scale {
+        2 => Ok(UPSCALE_2X),
+        4 => Ok(UPSCALE_4X),
+        _ => Err(format!("there is no {scale}× upscaler")),
+    }
+}
 
 /// The command that downloads the models, for error messages.
 pub const FETCH_COMMAND: &str = "cargo xtask models";
@@ -48,6 +59,10 @@ pub struct ModelInfo {
     pub summary: String,
     pub format: String,
     pub license: String,
+    /// The copyright lines the license's text goes with, for licenses that name the holder
+    /// (MIT, BSD).
+    #[serde(default)]
+    pub copyright: Vec<String>,
     pub source: String,
     pub source_url: String,
     /// The platform it runs on (`"macos"` for Core ML).
@@ -364,7 +379,16 @@ mod tests {
     fn registry_is_valid() {
         let models = registry();
         assert!(model(LAMA).is_ok() && model(SAM).is_ok());
+        assert!(model(UPSCALE_2X).is_ok() && model(UPSCALE_4X).is_ok());
         for m in models {
+            if m.license == "MIT" || m.license.starts_with("BSD") {
+                assert!(
+                    !m.copyright.is_empty(),
+                    "{}: {} needs its copyright",
+                    m.id,
+                    m.license
+                );
+            }
             assert!(
                 m.base_url.starts_with("https://") && m.base_url.ends_with('/'),
                 "{}",
@@ -408,6 +432,7 @@ mod tests {
             summary: String::new(),
             format: String::new(),
             license: String::new(),
+            copyright: Vec::new(),
             source: String::new(),
             source_url: String::new(),
             platform: std::env::consts::OS.into(),

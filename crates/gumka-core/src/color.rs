@@ -125,14 +125,17 @@ fn one_line(error: &lcms2::Error) -> String {
         .join(" ")
 }
 
-/// The color space LaMa sees a picture in when the picture's own would mislead it: linear
-/// values (it would see them far too dark) or very wide primaries (far too dull). It was trained
-/// on ordinary photos, so it gets Display P3, which holds them and is close to most pictures.
-/// Both ways relative colorimetric with black point compensation, 16 bits.
+/// The color space models see a picture in when the picture's own would mislead them: linear
+/// values (they would see them far too dark) or very wide primaries (far too dull). They were
+/// trained on ordinary photos, so they get Display P3, which holds them and is close to most
+/// pictures. Both ways relative colorimetric with black point compensation, 16 bits.
 pub(crate) struct ModelSpace {
     to_model: Transform<[u16; 3], [u16; 3], GlobalContext, DisallowCache>,
     to_picture: Transform<[u16; 3], [u16; 3], GlobalContext, DisallowCache>,
     gray: bool,
+    /// Colors beyond P3 may be clipped: the primaries are wider than P3, or unknown (a linear
+    /// color profile that converts through a table).
+    may_clip: bool,
 }
 
 /// Linear: a mid-gray value this far below the usual gamma of about 2.2.
@@ -198,6 +201,9 @@ impl ModelSpace {
         if !linear && !wide {
             return None;
         }
+        // A table's gamut can't be measured, so a linear one may hold colors beyond P3; gray
+        // never does.
+        let may_clip = !gray && (wide || (linear && !matrix));
         let skip = |why: String| {
             let what = if linear { "linear" } else { "very wide" };
             log_once(
@@ -216,6 +222,7 @@ impl ModelSpace {
                 to_model,
                 to_picture,
                 gray,
+                may_clip,
             },
             Err(error) => {
                 return skip(format!(
@@ -265,17 +272,34 @@ impl ModelSpace {
     }
 }
 
+/// Whether models see pictures with this profile converted to Display P3 while its colors may
+/// reach beyond P3, so that those may be clipped in what the models change: a very wide matrix
+/// profile (ProPhoto, Rec. 2020), or a linear one that converts through a table, whose gamut
+/// can't be told. A linear matrix profile that P3 holds (linear sRGB) loses nothing, and a
+/// profile that isn't converted (it fails the round trip) keeps its values.
+pub fn may_clip_beyond_p3(icc: Option<&[u8]>) -> bool {
+    ModelSpace::for_profile(icc).is_some_and(|space| space.may_clip)
+}
+
+/// Converts `pixels` in place, split over the cores by rows when there are many: Upscale
+/// converts whole tiles, at the model's output size too.
 fn apply(
     transform: &Transform<[u16; 3], [u16; 3], GlobalContext, DisallowCache>,
     pixels: &mut Rgb16,
 ) {
-    let src = pixels.as_raw().as_chunks::<3>().0.to_vec();
-    transform.transform_pixels(&src, pixels.as_chunks_mut::<3>().0);
+    let (width, height) = pixels.dimensions();
+    let read = u64::from(width) * u64::from(height);
+    let values = pixels.as_chunks_mut::<3>().0;
+    crate::by_rows(values, width as usize, read, |_, rows| {
+        let src = rows.to_vec();
+        transform.transform_pixels(&src, rows);
+    });
 }
 
 /// Between a picture's profile and P3 (either way), shareable between threads. Unoptimized:
 /// lcms2's optimization loses shadows (gray and tables are sampled on a coarse grid, and even
-/// matrix ProPhoto comes back 9% dark near black). At the model's size it costs little.
+/// matrix ProPhoto comes back 9% dark near black). That costs more per pixel, so `apply` uses
+/// every core on large pictures.
 fn convert(
     from: &Profile,
     from_format: PixelFormat,
@@ -422,53 +446,86 @@ pub(crate) mod tests {
             .unwrap()
     }
 
+    /// What a table profile has for converting into it.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Back {
+        Nothing,
+        /// A table that maps everything to black.
+        Meaningless,
+        /// The inverse of its way out.
+        Inverse,
+    }
+
     /// An input (camera-like) ICC v2 profile whose RGB to XYZ goes through a table (lut16), not
-    /// a matrix: `gamma` curves, then ProPhoto's primaries. With `reverse`, it has a table back
-    /// too (a meaningless one), so lcms2 can convert into it.
-    fn table_profile(gamma: f64, reverse: bool) -> Vec<u8> {
+    /// a matrix: `gamma` curves, then ProPhoto's primaries. `back` says what table it has back,
+    /// for lcms2 to convert into it.
+    fn table_profile(gamma: f64, back: Back) -> Vec<u8> {
         let s15 = |v: f64| ((v * 65536.0).round() as i32).to_be_bytes();
         let u16s = |values: &mut Vec<u8>, v: &[u16]| {
             values.extend(v.iter().flat_map(|v| v.to_be_bytes()));
         };
-        // lut16: 3 in, 3 out, a 2-point grid, an identity matrix, `entries`-long input curves,
-        // then the grid, then 2-entry (identity) output curves.
-        let lut16 = |entries: usize, curve: &dyn Fn(f64) -> f64, grid: &[[f64; 3]; 8]| {
-            let mut t = b"mft2\0\0\0\0\x03\x03\x02\0".to_vec();
-            for i in 0..9 {
-                t.extend(s15(if i % 4 == 0 { 1.0 } else { 0.0 }));
-            }
-            u16s(&mut t, &[entries as u16, 2]);
-            let input: Vec<u16> = (0..entries)
-                .map(|i| (curve(i as f64 / (entries - 1) as f64) * 65535.0).round() as u16)
-                .collect();
-            for _ in 0..3 {
-                u16s(&mut t, &input);
-            }
-            for xyz in grid {
-                // PCS XYZ in lut16: 1.0 is 0x8000.
-                u16s(
-                    &mut t,
-                    &xyz.map(|v| (v * 32768.0).round().min(65535.0) as u16),
-                );
-            }
-            for _ in 0..3 {
-                u16s(&mut t, &[0, 65535]);
-            }
-            t
-        };
+        // lut16: 3 in, 3 out, a 2-point grid, a matrix, `entries`-long input curves, then the
+        // grid (as stored), then 2-entry (identity) output curves.
+        let lut16 =
+            |matrix: [f64; 9], entries: usize, curve: &dyn Fn(f64) -> f64, grid: &[[u16; 3]; 8]| {
+                let mut t = b"mft2\0\0\0\0\x03\x03\x02\0".to_vec();
+                for v in matrix {
+                    t.extend(s15(v));
+                }
+                u16s(&mut t, &[entries as u16, 2]);
+                let input: Vec<u16> = (0..entries)
+                    .map(|i| (curve(i as f64 / (entries - 1) as f64) * 65535.0).round() as u16)
+                    .collect();
+                for _ in 0..3 {
+                    u16s(&mut t, &input);
+                }
+                for corner in grid {
+                    u16s(&mut t, corner);
+                }
+                for _ in 0..3 {
+                    u16s(&mut t, &[0, 65535]);
+                }
+                t
+            };
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         // ProPhoto's red, green and blue in XYZ (D50); grid corners in r, g, b order.
         let (r, g, b) = (
             [0.7977, 0.2880, 0.0],
             [0.1352, 0.7119, 0.0],
             [0.0313, 0.0001, 0.8249],
         );
-        let grid: [[f64; 3]; 8] = std::array::from_fn(|i| {
-            let on = [(i >> 2) & 1, (i >> 1) & 1, i & 1].map(|c| c as f64);
-            std::array::from_fn(|c| on[0] * r[c] + on[1] * g[c] + on[2] * b[c])
+        let corners: [[f64; 3]; 8] =
+            std::array::from_fn(|i| [(i >> 2) & 1, (i >> 1) & 1, i & 1].map(|c| c as f64));
+        // PCS XYZ in lut16: 1.0 is 0x8000.
+        let grid = corners.map(|on| {
+            [0, 1, 2].map(|c| {
+                let v = on[0] * r[c] + on[1] * g[c] + on[2] * b[c];
+                (v * 32768.0).round().min(65535.0) as u16
+            })
         });
-        let mut tags = vec![(*b"A2B0", lut16(256, &|x| x.powf(gamma), &grid))];
-        if reverse {
-            tags.push((*b"B2A0", lut16(2, &|x| x, &[[0.0; 3]; 8])));
+        let mut tags = vec![(*b"A2B0", lut16(identity, 256, &|x| x.powf(gamma), &grid))];
+        match back {
+            Back::Nothing => {}
+            Back::Meaningless => {
+                tags.push((*b"B2A0", lut16(identity, 2, &|x| x, &[[0; 3]; 8])));
+            }
+            Back::Inverse => {
+                // XYZ to RGB is the primaries' matrix inverted, on XYZ as lut16 holds it (1.0
+                // at 0x8000 of 0xFFFF), then the curves undone through 4096 entries, then an
+                // identity grid.
+                let m = [r[0], g[0], b[0], r[1], g[1], b[1], r[2], g[2], b[2]];
+                let cof = |i: usize, j: usize| {
+                    let (a, b) = ([(i + 1) % 3, (i + 2) % 3], [(j + 1) % 3, (j + 2) % 3]);
+                    m[a[0] * 3 + b[0]] * m[a[1] * 3 + b[1]]
+                        - m[a[0] * 3 + b[1]] * m[a[1] * 3 + b[0]]
+                };
+                let det = (0..3).map(|j| m[j] * cof(0, j)).sum::<f64>();
+                let scale = 65535.0 / 32768.0 / det;
+                let inverse: [f64; 9] = std::array::from_fn(|k| cof(k % 3, k / 3) * scale);
+                let identity_grid = corners.map(|on| on.map(|v| (v * 65535.0) as u16));
+                let curve = |x: f64| x.powf(1.0 / gamma);
+                tags.push((*b"B2A0", lut16(inverse, 4096, &curve, &identity_grid)));
+            }
         }
         let mut white = b"XYZ \0\0\0\0".to_vec();
         for v in [0.9642, 1.0, 0.8249] {
@@ -505,7 +562,7 @@ pub(crate) mod tests {
     #[test]
     fn linear_and_very_wide_profiles_are_converted_for_the_model() {
         let p3 = display_p3().icc().unwrap();
-        let cases: [(&str, Vec<u8>, bool); 11] = [
+        let cases: [(&str, Vec<u8>, bool); 12] = [
             ("sRGB", rgb_profile(D65, SRGB, 2.2), false),
             ("Adobe RGB", rgb_profile(D65, ADOBE, 2.2), false),
             ("Display P3", p3, false),
@@ -516,14 +573,19 @@ pub(crate) mod tests {
             ("gray 2.2", gray_profile(2.2), false),
             ("linear gray", gray_profile(1.0), true),
             // Its way back is meaningless: the round trip doesn't come back (round 2).
-            ("linear table", table_profile(1.0, true), false),
-            ("wide table", table_profile(2.2, true), false),
+            ("linear table", table_profile(1.0, Back::Meaningless), false),
+            ("wide table", table_profile(2.2, Back::Meaningless), false),
+            (
+                "linear table, both ways",
+                table_profile(1.0, Back::Inverse),
+                true,
+            ),
         ];
         for (name, icc, converted) in cases {
             let space = ModelSpace::for_profile(Some(&icc));
             assert_eq!(space.is_some(), converted, "{name}");
         }
-        let table = table_profile(1.0, false);
+        let table = table_profile(1.0, Back::Nothing);
         assert!(!Profile::new_icc(&table).unwrap().is_matrix_shaper());
         assert!(
             ModelSpace::for_profile(Some(&table)).is_none(),
@@ -536,6 +598,49 @@ pub(crate) mod tests {
             Some(lab.icc().unwrap()),
         ] {
             assert!(ModelSpace::for_profile(icc.as_deref()).is_none());
+        }
+    }
+
+    /// Colors beyond P3 may be clipped for primaries wider than P3, and for a linear table,
+    /// whose gamut can't be told; a linear matrix profile within P3 loses nothing (review: the
+    /// Upscale hint showed for linear sRGB).
+    #[test]
+    fn profiles_that_may_clip_beyond_p3() {
+        for (name, icc, clips) in [
+            ("linear sRGB", linear_srgb(), false),
+            ("linear gray", gray_profile(1.0), false),
+            ("Adobe RGB", rgb_profile(D65, ADOBE, 2.2), false),
+            ("sRGB", rgb_profile(D65, SRGB, 2.2), false),
+            ("ProPhoto", prophoto(), true),
+            ("linear ProPhoto", rgb_profile(D50, PROPHOTO, 1.0), true),
+            ("Rec. 2020", rgb_profile(D65, REC2020, 2.2), true),
+            (
+                "wide table, not converted",
+                table_profile(2.2, Back::Inverse),
+                false,
+            ),
+            // Converted for its curve, and a table doesn't tell its gamut (review round 2).
+            ("linear table", table_profile(1.0, Back::Inverse), true),
+        ] {
+            assert_eq!(may_clip_beyond_p3(Some(&icc)), clips, "{name}");
+        }
+        assert!(!may_clip_beyond_p3(None));
+    }
+
+    /// Large pictures are converted on every core, to the same values as on one.
+    #[test]
+    fn a_large_conversion_is_the_same_on_many_threads() {
+        let space = ModelSpace::for_profile(Some(&prophoto())).unwrap();
+        let pixels = Rgb16::from_fn(331, 257, |x, y| {
+            image::Rgb([(x * 197) as u16, (y * 251) as u16, ((x ^ y) * 89) as u16])
+        });
+        assert!(pixels.len() as u64 / 3 >= crate::PARALLEL_FROM);
+        for transform in [&space.to_model, &space.to_picture] {
+            let mut threaded = pixels.clone();
+            apply(transform, &mut threaded);
+            let mut one = pixels.as_raw().as_chunks::<3>().0.to_vec();
+            transform.transform_pixels(pixels.as_raw().as_chunks::<3>().0, &mut one);
+            assert_eq!(threaded.as_raw().as_chunks::<3>().0, &one[..]);
         }
     }
 

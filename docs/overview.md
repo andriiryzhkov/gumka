@@ -1,6 +1,6 @@
 # Overview
 
-Gumka is extensible AI photo retouching: erase, fill, and more. A native Rust app with on-device
+Gumka is extensible AI photo retouching: erase, upscale, and more. A native Rust app with on-device
 Core ML, optional cloud models later, working in 16 bits and wide gamut. It works standalone and
 as the external editor of RAW editors; Capture One is the first one it is tested with.
 
@@ -12,7 +12,7 @@ Working:
 
 - LaMa through the Core ML backend in `gumka-infer` (output bit-identical to a Swift reference).
 - The erase pipeline and TIFF / PNG / JPEG I/O with metadata in `gumka-core`.
-- `gumka-cli erase` and `gumka-cli select`.
+- `gumka-cli erase`, `gumka-cli select` and `gumka-cli upscale`.
 - The standalone app in `gumka-app` with the redesigned UI for the Erase tool: toolbar with
   cursor tools, tool rail, inspector with Selection / Model / Edges / Advanced / History, status
   bar, start screen; Before / After; erase on a worker thread; undo / redo; Save / Save As. Edges
@@ -20,6 +20,9 @@ Working:
 - Select object with SAM 2.1 Small (Core ML): click to include, Option-click to exclude. The
   picture is encoded on the first click and again only after its pixels change. Each click that
   changes the mask is an undoable step, added to the mask from before the selection.
+- Upscale, 1.25× to 4× (2× and 4× are the models' own output), with RealPLKSR (Core ML, our own
+  conversion): in place and undoable, run in tiles on the worker thread with progress and
+  Cancel ([upscale-pipeline.md](upscale-pipeline.md)).
 - The Models page, built from `models.toml` via `gumka_infer::models::registry()`.
 - A color-managed preview ([color.md](color.md)).
 - `cargo xtask bundle`: an unsigned `Gumka.app` and disk image with the models bundled
@@ -41,7 +44,7 @@ them if the code argues otherwise, but keep the principles.
 
 - First tool: object removal (erase) with a brush mask and SAM click-to-select.
 - Extensible tool model: each tool = input (mask / prompt / none) + model(s) + pipeline step.
-  Planned later: generative fill (diffusion inpainting), outpainting / canvas extend, upscaling.
+  Upscaling is done. Planned later: outpainting / canvas extend, generative fill (undecided).
   Skipped: AI denoise and AI masking (Capture One already has them); depth-based background blur
   and relighting (dropped, October 2026).
 - Two ways to run a model, no more: locally (Core ML on macOS, models bundled with the app) or
@@ -67,6 +70,7 @@ them if the code argues otherwise, but keep the principles.
    its document types, the open-documents handler and Save & Return.)
 5. SAM click-to-select. (Done.)
 6. Polish: brush-size shortcut (done), before/after toggle (done), model choice.
+7. Upscale with RealPLKSR, 2× and 4×, then any factor from 1.25× to 4×. (Done.)
 
 ## Reference projects
 

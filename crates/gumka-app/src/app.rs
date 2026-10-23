@@ -4,6 +4,8 @@
 //! status bar, plus the start screen and dialogs.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use eframe::egui::{
     self, Align, Align2, Color32, CornerRadius, FontId, Frame, Key, KeyboardShortcut, Layout,
@@ -11,6 +13,7 @@ use eframe::egui::{
 };
 use gumka_core::erase::EraseSettings;
 use gumka_core::picture::FileType;
+use gumka_core::upscale::{Factor, largest_factor, result_size};
 
 use crate::canvas::{Canvas, CursorTool, ShowOptions};
 use crate::display::ColorSpaceTag;
@@ -18,7 +21,7 @@ use crate::document::{Changed, Document};
 use crate::icons::{self, Icon};
 use crate::theme::*;
 use crate::widgets;
-use crate::worker::{Reply, Status, Which, Worker};
+use crate::worker::{Reply, Status, UPSCALERS, Which, Worker, upscaler_name, upscaler_slot};
 use gumka_core::select::Click;
 
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
@@ -40,22 +43,41 @@ const SMALLER_BRUSH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, K
 const BIGGER_BRUSH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::CloseBracket);
 const BRUSH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::B);
 const REMOVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::E);
-const PAN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::H);
 const SELECT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::S);
 const ERASE_TOOL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num1);
+const UPSCALE_TOOL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Num2);
 
 /// Height of the History list before it scrolls: about five rows.
 const HISTORY_LIST_HEIGHT: f32 = 135.0;
 
-/// A tool in the rail. Only Erase exists so far; Fill, Extend and Upscale slot in here.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// A tool in the rail. Extend slots in here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tool {
     Erase,
+    Upscale,
+}
+
+/// What a tool works on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Input {
+    /// What the mask marks: the mask tools are on.
+    Mask,
+    /// The whole photo: the mask is hidden and can't be painted.
+    WholeImage,
+}
+
+impl Input {
+    fn label(self) -> &'static str {
+        match self {
+            Input::Mask => "Mask",
+            Input::WholeImage => "Whole image",
+        }
+    }
 }
 
 struct ToolInfo {
     name: &'static str,
-    input: &'static str,
+    input: Input,
     blurb: &'static str,
     action: &'static str,
     footnote: &'static str,
@@ -64,21 +86,58 @@ struct ToolInfo {
 }
 
 impl Tool {
-    const ALL: [Tool; 1] = [Tool::Erase];
+    const ALL: [Tool; 2] = [Tool::Erase, Tool::Upscale];
 
     fn info(self) -> ToolInfo {
         match self {
             Tool::Erase => ToolInfo {
                 name: "Erase",
-                input: "Mask",
+                input: Input::Mask,
                 blurb: "Remove objects and rebuild the area from its surroundings.",
                 action: "Erase",
                 footnote: "Pixels beyond the mask’s soft edge stay untouched.",
                 icon: icons::ERASE,
                 shortcut: ERASE_TOOL,
             },
+            Tool::Upscale => ToolInfo {
+                name: "Upscale",
+                input: Input::WholeImage,
+                blurb: "Make the photo larger, with detail rebuilt by a model.",
+                action: "Upscale",
+                footnote: "Undo returns the photo to its original size.",
+                icon: icons::UPSCALE,
+                shortcut: UPSCALE_TOOL,
+            },
         }
     }
+
+    fn input(self) -> Input {
+        self.info().input
+    }
+}
+
+/// An upscale under way.
+struct UpscaleRun {
+    factor: Factor,
+    /// Set to stop it after the tile it is on.
+    cancel: Arc<AtomicBool>,
+    /// Tiles done, of how many (0 of 0 until the worker says).
+    done: usize,
+    total: usize,
+}
+
+/// Said when not even the smallest scale fits the photo.
+const AS_LARGE_AS_IT_GETS: &str = "This photo is already as large as Upscale can make it.";
+
+/// The most memory a photo upscaled from `from` to `to` pixels can take while it is open, in
+/// bytes: its pixels (6 bytes each, 2 more with alpha) and mask (1); the preview's and the mask
+/// overlay's pyramids, once every tile has been shown at 100% (4 bytes a texel, and a third
+/// more for the smaller levels); and the photo as it was, kept for undo, with the Before / After
+/// pyramid.
+fn memory_needed(from: u64, to: u64, alpha: bool) -> f64 {
+    let stored = if alpha { 9.0 } else { 7.0 };
+    let pyramid = 4.0 * 4.0 / 3.0;
+    to as f64 * (stored + 2.0 * pyramid) + from as f64 * (stored + pyramid)
 }
 
 /// A click-to-select session: its clicks, and the mask from before it, which every result
@@ -103,6 +162,7 @@ struct Sections {
     model: bool,
     edges: bool,
     advanced: bool,
+    scale: bool,
 }
 
 /// An action waiting for the answer to "save changes?".
@@ -131,9 +191,17 @@ pub struct GumkaApp {
     /// moves the id on, so that replies still on their way are ignored.
     select_id: u64,
     selecting: bool,
-    /// The pixels are with the worker: for an erase, or for encoding (`encoding`).
+    /// The pixels are with the worker: for an erase, an upscale (`upscaling`), or for encoding
+    /// (`encoding`).
     busy: bool,
-    last_erase: Option<f32>,
+    /// The upscalers, in the order of [`UPSCALERS`].
+    upscalers: [Status; UPSCALERS.len()],
+    /// The scale chosen for Upscale, changed only by its slider. What it makes is
+    /// [`Self::effective_factor`].
+    factor: Factor,
+    upscaling: Option<UpscaleRun>,
+    /// The last tool run ("erase", "upscale") and its seconds, for the status bar.
+    last_run: Option<(&'static str, f32)>,
     /// Shown in a dialog until dismissed.
     message: Option<String>,
     pending: Option<Pending>,
@@ -187,7 +255,10 @@ impl GumkaApp {
             select_id: 0,
             selecting: false,
             busy: false,
-            last_erase: None,
+            upscalers: std::array::from_fn(|_| Status::Loading),
+            factor: Factor::X2,
+            upscaling: None,
+            last_run: None,
             message: None,
             pending: None,
             waiting_save: None,
@@ -206,6 +277,7 @@ impl GumkaApp {
                 model: true,
                 edges: false,
                 advanced: false,
+                scale: true,
             },
             startup: path,
             sent: None,
@@ -289,7 +361,7 @@ impl GumkaApp {
                 ));
                 self.doc = Some(doc);
                 self.page = Page::Editor;
-                self.last_erase = None;
+                self.last_run = None;
                 self.compare = false;
             }
             Err(e) => self.message = Some(format!("Couldn't open {}:\n{e}", path.display())),
@@ -370,13 +442,20 @@ impl GumkaApp {
     // ---- Edit actions ----
 
     fn run_tool(&mut self) {
+        match self.tool {
+            Tool::Erase => self.run_erase(),
+            Tool::Upscale => self.run_upscale(),
+        }
+    }
+
+    fn run_erase(&mut self) {
         if self.busy {
             return;
         }
         let Some(doc) = &mut self.doc else { return };
         match &self.model {
             Status::Ready { .. } => {}
-            Status::Loading => {
+            Status::Loading | Status::NotLoaded => {
                 self.message = Some("The model is still loading.".into());
                 return;
             }
@@ -395,6 +474,69 @@ impl GumkaApp {
         self.worker
             .erase(doc.take_pixels(), doc.mask.clone(), self.settings, profile);
         self.end_selection();
+    }
+
+    /// The scale Upscale makes: the one chosen, or the largest that fits the open photo when
+    /// that is smaller, so that the slider, its label, the summary and the action agree. The
+    /// choice stays for the next photo, and for this one after an undo.
+    fn effective_factor(&self) -> Factor {
+        let largest = self.doc.as_ref().and_then(|d| {
+            let (w, h) = d.viewed_size();
+            largest_factor(w, h)
+        });
+        match largest {
+            Some(largest) if largest.quarters() < self.factor.quarters() => largest,
+            _ => self.factor,
+        }
+    }
+
+    /// Why Upscale can't run now, said for the user, or `None` if it can.
+    fn upscale_refused(&self) -> Option<String> {
+        let doc = self.doc.as_ref()?;
+        let factor = self.effective_factor();
+        let slot = upscaler_slot(factor.model_scale());
+        if let Status::Unavailable(reason) = &self.upscalers[slot] {
+            return Some(format!("Upscale is unavailable:\n{reason}"));
+        }
+        // The effective factor fits whenever any does.
+        let (w, h) = doc.viewed_size();
+        result_size(w, h, factor)
+            .is_err()
+            .then(|| AS_LARGE_AS_IT_GETS.into())
+    }
+
+    fn run_upscale(&mut self) {
+        if self.busy || self.doc.is_none() {
+            return;
+        }
+        if let Some(why) = self.upscale_refused() {
+            self.message = Some(why);
+            return;
+        }
+        let factor = self.effective_factor();
+        let Some(doc) = &mut self.doc else { return };
+        self.busy = true;
+        self.compare = false;
+        let profile = doc.picture.icc_profile().map(<[u8]>::to_vec);
+        let alpha = doc.picture.alpha().map(<[u16]>::to_vec);
+        let premultiplied = doc.picture.associated_alpha();
+        let cancel = self
+            .worker
+            .upscale(doc.take_pixels(), alpha, premultiplied, factor, profile);
+        self.upscaling = Some(UpscaleRun {
+            factor,
+            cancel,
+            done: 0,
+            total: 0,
+        });
+        self.end_selection();
+    }
+
+    /// Stops the running upscale after its current tile; the photo stays as it was.
+    fn cancel_upscale(&mut self) {
+        if let Some(run) = &self.upscaling {
+            run.cancel.store(true, Ordering::Relaxed);
+        }
     }
 
     /// Adds a click to the selection, starting one if needed, and asks for a new mask.
@@ -481,8 +623,8 @@ impl GumkaApp {
         // A click that changes nothing still counts as shown (it leaves no history step).
         selection.shown = selection.clicks.len();
         self.redraw(Changed {
-            pixels: None,
             mask: (!rect.is_empty()).then_some(rect),
+            ..Changed::default()
         });
     }
 
@@ -505,8 +647,8 @@ impl GumkaApp {
         if let Some(doc) = &mut self.doc {
             let rect = doc.clear_mask();
             self.redraw(Changed {
-                pixels: None,
                 mask: rect,
+                ..Changed::default()
             });
         }
     }
@@ -519,8 +661,8 @@ impl GumkaApp {
         if let Some(doc) = &mut self.doc {
             let rect = doc.invert_mask();
             self.redraw(Changed {
-                pixels: None,
                 mask: Some(rect),
+                ..Changed::default()
             });
         }
     }
@@ -529,6 +671,10 @@ impl GumkaApp {
         let (Some(doc), Some(canvas)) = (&self.doc, &mut self.canvas) else {
             return;
         };
+        if changed.resized {
+            canvas.resize(&doc.picture.pixels, &doc.mask);
+            return;
+        }
         if let Some(rect) = changed.pixels {
             canvas.update_pixels(&doc.picture.pixels, rect);
         }
@@ -544,6 +690,35 @@ impl GumkaApp {
             match reply {
                 Reply::Status(Which::Inpainter, status) => self.model = status,
                 Reply::Status(Which::Segmenter, status) => self.sam = status,
+                Reply::Status(Which::Upscaler(scale), status) => {
+                    self.upscalers[upscaler_slot(scale)] = status;
+                }
+                Reply::Progress { done, total } => {
+                    if let Some(run) = &mut self.upscaling {
+                        (run.done, run.total) = (done, total);
+                    }
+                }
+                Reply::Upscaled { pixels, result } => {
+                    self.busy = false;
+                    self.upscaling = None;
+                    let Some(doc) = &mut self.doc else { continue };
+                    doc.restore_pixels(pixels);
+                    match result {
+                        Ok(Some(up)) => {
+                            let label = format!("Upscale {}", up.factor);
+                            let detail = format!("{} · {:.1} s", up.model, up.seconds);
+                            match doc.push_resize(up.pixels, up.alpha, &label, &detail) {
+                                Ok(changed) => {
+                                    self.last_run = Some(("upscale", up.seconds));
+                                    self.redraw(changed);
+                                }
+                                Err(e) => self.message = Some(format!("Upscale failed:\n{e}")),
+                            }
+                        }
+                        Ok(None) => {} // cancelled: nothing changes
+                        Err(e) => self.message = Some(format!("Upscale failed:\n{e}")),
+                    }
+                }
                 Reply::MaxClicks(n) => self.max_clicks = n,
                 Reply::Encoded {
                     pixels,
@@ -587,7 +762,7 @@ impl GumkaApp {
                         Ok(Some(erased)) => {
                             let detail = format!("{model} · {:.1} s", erased.seconds);
                             let changed = doc.push_erase(erased.rect, erased.old, detail);
-                            self.last_erase = Some(erased.seconds);
+                            self.last_run = Some(("erase", erased.seconds));
                             self.redraw(changed);
                         }
                         Ok(None) => {}
@@ -598,6 +773,8 @@ impl GumkaApp {
                     let reason = format!("the model thread stopped: {reason}");
                     self.model = Status::Unavailable(reason.clone());
                     self.sam = Status::Unavailable(reason.clone());
+                    self.upscalers = std::array::from_fn(|_| Status::Unavailable(reason.clone()));
+                    self.upscaling = None;
                     self.end_selection();
                     self.encoding = false;
                     if std::mem::take(&mut self.busy) {
@@ -608,7 +785,7 @@ impl GumkaApp {
                         self.canvas = None;
                         self.pending = None;
                         self.waiting_save = None;
-                        self.last_erase = None;
+                        self.last_run = None;
                         self.compare = false;
                         self.message = Some(format!(
                             "Gumka lost the photo it was working on ({reason}).\nOpen it again; \
@@ -661,27 +838,34 @@ impl GumkaApp {
         if pressed(&RUN) && !stroking {
             self.run_tool();
         }
+        // Escape stops an upscale; otherwise it clears the mask, where the tool shows one.
         if pressed(&CLEAR_MASK) && !stroking {
-            self.clear_mask();
+            if self.upscaling.is_some() {
+                self.cancel_upscale();
+            } else if self.tool.input() == Input::Mask {
+                self.clear_mask();
+            }
         }
         if pressed(&ERASE_TOOL) {
             self.tool = Tool::Erase;
         }
-        if pressed(&BRUSH) {
+        if pressed(&UPSCALE_TOOL) {
+            self.tool = Tool::Upscale;
+        }
+        // The mask tools' keys belong to tools that take a mask; elsewhere they do nothing.
+        let masking = self.tool.input() == Input::Mask;
+        if masking && pressed(&BRUSH) {
             self.cursor = CursorTool::Brush;
         }
-        if pressed(&REMOVE) {
+        if masking && pressed(&REMOVE) {
             self.cursor = CursorTool::Remove;
         }
-        if pressed(&SELECT) {
+        if masking && pressed(&SELECT) {
             if self.sam.is_ready() {
                 self.cursor = CursorTool::Select;
             } else if let Status::Unavailable(reason) = &self.sam {
                 self.message = Some(format!("Select object is unavailable:\n{reason}"));
             }
-        }
-        if pressed(&PAN) {
-            self.cursor = CursorTool::Pan;
         }
         if let Some(canvas) = &mut self.canvas {
             // The view holds still while a stroke is painted (see `Canvas::show`).
@@ -697,10 +881,10 @@ impl GumkaApp {
             if pressed(&ZOOM_OUT) && !stroking {
                 canvas.zoom_by(0.5);
             }
-            if pressed(&SMALLER_BRUSH) {
+            if masking && pressed(&SMALLER_BRUSH) {
                 canvas.brush_radius = (canvas.brush_radius / 1.25).max(1.0);
             }
-            if pressed(&BIGGER_BRUSH) {
+            if masking && pressed(&BIGGER_BRUSH) {
                 canvas.brush_radius = (canvas.brush_radius * 1.25).min(2000.0);
             }
         }
@@ -792,6 +976,8 @@ impl GumkaApp {
         let has_doc = self.doc.is_some();
         let dirty = self.is_dirty();
         let idle = !self.busy;
+        // The mask tools are for tools that take a mask. Panning is Space and a drag, anywhere.
+        let masking = has_doc && self.tool.input() == Input::Mask;
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let tip =
@@ -842,13 +1028,13 @@ impl GumkaApp {
                             (CursorTool::Remove, icons::REMOVE, "Remove from mask (E)"),
                         ];
                         for (tool, icon, tooltip) in cursors {
-                            let selected = has_doc && self.cursor == tool;
+                            let selected = masking && self.cursor == tool;
                             if widgets::icon_button(
                                 ui,
                                 icon,
                                 tooltip,
                                 selected,
-                                has_doc,
+                                masking,
                                 vec2(34.0, 30.0),
                             )
                             .clicked()
@@ -858,36 +1044,25 @@ impl GumkaApp {
                         }
                         let tooltip = match &self.sam {
                             Status::Ready { .. } => "Select object (S)".to_owned(),
-                            Status::Loading => "Select object (S) · loading SAM…".to_owned(),
+                            Status::Loading | Status::NotLoaded => {
+                                "Select object (S) · loading SAM…".to_owned()
+                            }
                             Status::Unavailable(reason) => {
                                 format!("Select object (S) · unavailable: {reason}")
                             }
                         };
-                        let selected = has_doc && self.cursor == CursorTool::Select;
+                        let selected = masking && self.cursor == CursorTool::Select;
                         if widgets::icon_button(
                             ui,
                             icons::SELECT,
                             &tooltip,
                             selected,
-                            has_doc && self.sam.is_ready(),
+                            masking && self.sam.is_ready(),
                             vec2(34.0, 30.0),
                         )
                         .clicked()
                         {
                             self.cursor = CursorTool::Select;
-                        }
-                        let selected = has_doc && self.cursor == CursorTool::Pan;
-                        if widgets::icon_button(
-                            ui,
-                            icons::PAN,
-                            "Pan (H)",
-                            selected,
-                            has_doc,
-                            vec2(34.0, 30.0),
-                        )
-                        .clicked()
-                        {
-                            self.cursor = CursorTool::Pan;
                         }
                     });
                 });
@@ -1040,7 +1215,7 @@ impl GumkaApp {
                             .color(TEXT),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        widgets::chip(ui, &format!("Input · {}", info.input));
+                        widgets::chip(ui, &format!("Input · {}", info.input.label()));
                     });
                 });
                 ui.label(RichText::new(info.blurb).size(12.0).color(TEXT_WEAK));
@@ -1055,18 +1230,9 @@ impl GumkaApp {
                 bottom: 14,
             }))
             .show(ui, |ui| {
-                let has_mask = self.doc.as_ref().is_some_and(Document::has_mask);
-                let enabled = has_mask && self.model_ready() && !self.busy;
-                let erasing = self.busy && !self.encoding;
-                let label = if erasing { "Erasing…" } else { info.action };
-                let response = widgets::primary_button(ui, label, "↩", enabled, erasing);
-                let response = if has_mask {
-                    response
-                } else {
-                    response.on_hover_text("Paint over what you want to remove first")
-                };
-                if response.clicked() {
-                    self.run_tool();
+                match self.tool {
+                    Tool::Erase => self.erase_action(ui, &info),
+                    Tool::Upscale => self.upscale_action(ui, &info),
                 }
                 ui.add_space(6.0);
                 ui.vertical_centered(|ui| {
@@ -1089,9 +1255,200 @@ impl GumkaApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        self.erase_sections(ui);
+                        match self.tool {
+                            Tool::Erase => self.erase_sections(ui),
+                            Tool::Upscale => self.upscale_sections(ui),
+                        }
                     });
             });
+    }
+
+    fn erase_action(&mut self, ui: &mut Ui, info: &ToolInfo) {
+        let has_mask = self.doc.as_ref().is_some_and(Document::has_mask);
+        let enabled = has_mask && self.model_ready() && !self.busy;
+        let erasing = self.busy && !self.encoding && self.upscaling.is_none();
+        let label = if erasing { "Erasing…" } else { info.action };
+        let response = widgets::primary_button(ui, label, "↩", enabled, erasing);
+        let response = if has_mask {
+            response
+        } else {
+            response.on_hover_text("Paint over what you want to remove first")
+        };
+        if response.clicked() {
+            self.run_tool();
+        }
+    }
+
+    fn upscale_action(&mut self, ui: &mut Ui, info: &ToolInfo) {
+        if let Some(run) = &self.upscaling {
+            let percent = (run.done * 100).checked_div(run.total).unwrap_or(0);
+            let label = format!("Upscaling {}… {percent}%", run.factor);
+            widgets::primary_button(ui, &label, "", false, true);
+            ui.add_space(8.0);
+            let width = ui.available_width();
+            if widgets::button(ui, "Cancel", true, Some(width))
+                .on_hover_text("Stop and keep the photo as it was (Esc)")
+                .clicked()
+            {
+                self.cancel_upscale();
+            }
+            return;
+        }
+        let refused = self.upscale_refused();
+        let enabled = self.doc.is_some() && refused.is_none() && !self.busy;
+        let label = format!("{} {}", info.action, self.effective_factor());
+        let response = widgets::primary_button(ui, &label, "↩", enabled, false);
+        let response = match &refused {
+            Some(why) => response.on_hover_text(why),
+            None => response,
+        };
+        if response.clicked() {
+            self.run_tool();
+        }
+    }
+
+    fn upscale_sections(&mut self, ui: &mut Ui) {
+        let size = self.doc.as_ref().map(Document::viewed_size);
+        let may_clip = self.doc.as_ref().is_some_and(Document::may_clip_beyond_p3);
+        let alpha = self
+            .doc
+            .as_ref()
+            .is_some_and(|d| d.picture.alpha().is_some());
+        let largest = size.map(|(w, h)| largest_factor(w, h));
+        let factor = self.effective_factor();
+        let result = size.map(|(w, h)| result_size(w, h, factor));
+        let summary = match &result {
+            Some(Ok((w, h))) => format!("{factor} · {}", megapixels(*w, *h)),
+            _ => factor.to_string(),
+        };
+        let idle = !self.busy;
+        widgets::section(
+            ui,
+            "Scale",
+            &mut self.sections.scale,
+            Some(summary),
+            false,
+            |ui| {
+                let top = largest.flatten().unwrap_or(Factor::MIN).quarters();
+                let mut quarters = factor.quarters();
+                ui.add_enabled_ui(idle && largest != Some(None), |ui| {
+                    let slider = widgets::step_slider_row(
+                        ui,
+                        "Scale",
+                        &factor.to_string(),
+                        &mut quarters,
+                        Factor::MIN.quarters()..=top.max(Factor::MIN.quarters()),
+                    );
+                    if slider.changed()
+                        && let Some(chosen) = Factor::from_quarters(quarters)
+                    {
+                        self.factor = chosen;
+                    }
+                });
+                let made = if factor.is_exact() {
+                    "The model's own output.".to_owned()
+                } else {
+                    format!(
+                        "Made with the {}× model, then scaled down to {factor}.",
+                        factor.model_scale(),
+                    )
+                };
+                widgets::hint(ui, &made);
+                match &result {
+                    Some(Ok((w, h))) => {
+                        widgets::info_row(
+                            ui,
+                            "Result",
+                            &format!("{w} × {h} px · {}", megapixels(*w, *h)),
+                        );
+                        let from = size.map_or(0, |(w, h)| u64::from(w) * u64::from(h));
+                        let bytes = memory_needed(from, u64::from(*w) * u64::from(*h), alpha);
+                        if bytes > 1.5e9 {
+                            widgets::hint(
+                                ui,
+                                &format!(
+                                    "A photo this large can need up to about {:.1} GB of \
+                                     memory while it is open.",
+                                    bytes / 1e9
+                                ),
+                            );
+                        }
+                    }
+                    Some(Err(_)) => {
+                        ui.label(RichText::new(AS_LARGE_AS_IT_GETS).size(12.0).color(WARN));
+                    }
+                    None => {}
+                }
+                if may_clip {
+                    widgets::hint(
+                        ui,
+                        "The model sees this photo in Display P3, so colors beyond P3 may be \
+                         clipped across the photo.",
+                    );
+                }
+            },
+        );
+
+        let scale = factor.model_scale();
+        let name = upscaler_name(scale);
+        let status = &self.upscalers[upscaler_slot(scale)];
+        let summary = match status {
+            Status::Ready { .. } | Status::NotLoaded => name.clone(),
+            Status::Loading => "Loading…".into(),
+            Status::Unavailable(_) => "Unavailable".into(),
+        };
+        widgets::section(
+            ui,
+            "Model",
+            &mut self.sections.model,
+            Some(summary),
+            false,
+            |ui| match status {
+                Status::Ready { runs_on, .. } => {
+                    ui.label(
+                        RichText::new(&name)
+                            .font(FontId::new(14.0, medium()))
+                            .color(TEXT),
+                    );
+                    widgets::info_row(ui, "Runs on", &format!("This Mac · {runs_on}"));
+                    widgets::hint(
+                        ui,
+                        "Sharpens what is in the photo without inventing detail.",
+                    );
+                }
+                Status::NotLoaded => {
+                    ui.label(
+                        RichText::new(&name)
+                            .font(FontId::new(14.0, medium()))
+                            .color(TEXT),
+                    );
+                    widgets::info_row(ui, "Runs on", "This Mac · Core ML");
+                    widgets::hint(
+                        ui,
+                        "Sharpens what is in the photo without inventing detail. Included with \
+                         Gumka; it loads the first time you upscale.",
+                    );
+                }
+                Status::Loading => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            RichText::new(format!("Loading {name}…"))
+                                .size(12.0)
+                                .color(TEXT_LABEL),
+                        );
+                    });
+                }
+                Status::Unavailable(reason) => {
+                    ui.label(
+                        RichText::new("Upscale is unavailable")
+                            .size(12.0)
+                            .color(WARN),
+                    );
+                    widgets::hint(ui, reason);
+                }
+            },
+        );
     }
 
     fn erase_sections(&mut self, ui: &mut Ui) {
@@ -1164,7 +1521,7 @@ impl GumkaApp {
 
         let summary = match &self.model {
             Status::Ready { model, .. } => model.clone(),
-            Status::Loading => "Loading…".into(),
+            Status::Loading | Status::NotLoaded => "Loading…".into(),
             Status::Unavailable(_) => "Unavailable".into(),
         };
         widgets::section(
@@ -1183,7 +1540,7 @@ impl GumkaApp {
                     widgets::info_row(ui, "Runs on", &format!("This Mac · {runs_on}"));
                     widgets::hint(ui, "Included with Gumka.");
                 }
-                Status::Loading => {
+                Status::Loading | Status::NotLoaded => {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(RichText::new("Loading LaMa…").size(12.0).color(TEXT_LABEL));
@@ -1346,14 +1703,29 @@ impl GumkaApp {
                             .color(TEXT_WEAK),
                     );
                 }
-                if let Some(seconds) = self.last_erase {
-                    ui.label(small(format!("Last erase {seconds:.1} s")));
+                if let Some(run) = &self.upscaling {
+                    let percent = (run.done * 100).checked_div(run.total).unwrap_or(0);
+                    ui.label(small(format!("Upscaling {percent}%")));
+                } else if let Some((what, seconds)) = self.last_run {
+                    ui.label(small(format!("Last {what} {seconds:.1} s")));
                 }
+                // The model of the tool in use.
+                let (status, name) = match self.tool {
+                    Tool::Erase => (&self.model, "Erase".to_owned()),
+                    Tool::Upscale => {
+                        let scale = self.effective_factor().model_scale();
+                        (&self.upscalers[upscaler_slot(scale)], upscaler_name(scale))
+                    }
+                };
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    match &self.model {
+                    match status {
                         Status::Ready { model, runs_on } => {
                             ui.label(small(format!("{model} ready · {runs_on}")));
+                            widgets::dot(ui, OK);
+                        }
+                        Status::NotLoaded => {
+                            ui.label(small(format!("{name} · loads when used")));
                             widgets::dot(ui, OK);
                         }
                         Status::Loading => {
@@ -1361,8 +1733,13 @@ impl GumkaApp {
                             ui.spinner();
                         }
                         Status::Unavailable(reason) => {
-                            ui.label(RichText::new("Erase unavailable").size(11.5).color(WARN))
-                                .on_hover_text(reason);
+                            let tool = self.tool.info().name;
+                            ui.label(
+                                RichText::new(format!("{tool} unavailable"))
+                                    .size(11.5)
+                                    .color(WARN),
+                            )
+                            .on_hover_text(reason);
                         }
                     }
                 });
@@ -1516,6 +1893,18 @@ impl GumkaApp {
             );
             model_status_row(ui, "LaMa · erase", &self.model);
             model_status_row(ui, "SAM 2.1 · select object", &self.sam);
+            // The two upscalers as one row: the worse of their states.
+            let rank = |s: &Status| match s {
+                Status::Unavailable(_) => 0,
+                Status::Loading => 1,
+                Status::NotLoaded | Status::Ready { .. } => 2,
+            };
+            let upscaler = self
+                .upscalers
+                .iter()
+                .min_by_key(|s| rank(s))
+                .unwrap_or(&self.upscalers[0]);
+            model_status_row(ui, "RealPLKSR · upscale", upscaler);
             if ui
                 .add(egui::Link::new(
                     RichText::new("Manage models…").size(12.0).underline(),
@@ -1587,7 +1976,7 @@ impl GumkaApp {
         egui::Modal::new(egui::Id::unique("unsaved")).show(ctx, |ui| {
             ui.set_max_width(420.0);
             ui.heading(format!("Save changes to {name}?"));
-            ui.label("Your erases will be lost if you don't save them.");
+            ui.label("Your changes will be lost if you don't save them.");
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
@@ -1708,24 +2097,41 @@ impl eframe::App for GumkaApp {
             egui::CentralPanel::default()
                 .frame(Frame::NONE.fill(BG_PANEL))
                 .show(ui, |ui| {
-                    crate::models_page::show(ui, &self.model_rows, &self.model, &self.sam)
+                    crate::models_page::show(ui, &self.model_rows, &|info| match info.id.as_str() {
+                        gumka_infer::models::LAMA => Some(&self.model),
+                        gumka_infer::models::SAM => Some(&self.sam),
+                        id => UPSCALERS
+                            .iter()
+                            .position(|&s| gumka_infer::models::upscaler_id(s) == Ok(id))
+                            .map(|slot| &self.upscalers[slot]),
+                    })
                 });
         } else {
             egui::CentralPanel::default()
                 .frame(Frame::NONE.fill(BG_VIEWER))
                 .show(ui, |ui| {
                     let no_clicks: &[Click] = &[];
+                    // A tool for the whole photo hides the mask, and only pans.
+                    let masking = self.tool.input() == Input::Mask;
                     let options = ShowOptions {
-                        tool: self.cursor,
-                        can_paint: !self.busy && !self.dialog_open(),
-                        show_mask: self.show_mask,
+                        tool: if masking {
+                            self.cursor
+                        } else {
+                            CursorTool::Pan
+                        },
+                        can_paint: masking && !self.busy && !self.dialog_open(),
+                        show_mask: masking && self.show_mask,
                         compare: self.compare || ui.input(|i| i.key_down(Key::Backslash)),
-                        clicks: self.selection.as_ref().map_or(no_clicks, |s| &s.clicks),
+                        clicks: match &self.selection {
+                            Some(s) if masking => &s.clicks,
+                            _ => no_clicks,
+                        },
                     };
                     let mut click = None;
                     match (&mut self.doc, &mut self.canvas) {
                         (Some(doc), Some(canvas)) => {
-                            let events = canvas.show(ui, &mut doc.mask, &options);
+                            let events =
+                                canvas.show(ui, &doc.picture.pixels, &mut doc.mask, &options);
                             if let Some(stroke) = events.stroke_done {
                                 doc.push_stroke(&stroke.before, stroke.rect, stroke.removed);
                             }
@@ -1765,7 +2171,7 @@ fn select_hint(ui: &mut Ui, sam: &Status, cursor: CursorTool, working: bool) {
         (Status::Ready { .. }, _) => {
             widgets::hint(ui, "Or press S and click an object to select it.");
         }
-        (Status::Loading, _) => widgets::hint(ui, "Select object is loading…"),
+        (Status::Loading | Status::NotLoaded, _) => widgets::hint(ui, "Select object is loading…"),
         (Status::Unavailable(_), _) => {}
     }
 }
@@ -1774,7 +2180,7 @@ fn select_hint(ui: &mut Ui, sam: &Status, cursor: CursorTool, working: bool) {
 fn model_status_row(ui: &mut Ui, name: &str, status: &Status) {
     ui.horizontal(|ui| {
         match status {
-            Status::Ready { .. } => widgets::dot(ui, OK),
+            Status::Ready { .. } | Status::NotLoaded => widgets::dot(ui, OK),
             Status::Loading => {
                 ui.spinner();
             }
@@ -1784,6 +2190,7 @@ fn model_status_row(ui: &mut Ui, name: &str, status: &Status) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let state = match status {
                 Status::Ready { .. } => "Ready on this Mac",
+                Status::NotLoaded => "Included",
                 Status::Loading => "Loading…",
                 Status::Unavailable(_) => "Unavailable",
             };
@@ -1793,6 +2200,16 @@ fn model_status_row(ui: &mut Ui, name: &str, status: &Status) {
             }
         });
     });
+}
+
+/// A size in megapixels, as "96 MP" (one decimal below 10).
+fn megapixels(w: u32, h: u32) -> String {
+    let mp = f64::from(w) * f64::from(h) / 1e6;
+    if mp < 10.0 {
+        format!("{mp:.1} MP")
+    } else {
+        format!("{mp:.0} MP")
+    }
 }
 
 /// The native open and save panels. Tests never show one: they count them instead.
@@ -1874,7 +2291,10 @@ mod tests {
             select_id: 0,
             selecting: false,
             busy: false,
-            last_erase: None,
+            upscalers: std::array::from_fn(|_| Status::Loading),
+            factor: Factor::X2,
+            upscaling: None,
+            last_run: None,
             message: None,
             pending: None,
             waiting_save: None,
@@ -1893,6 +2313,7 @@ mod tests {
                 model: true,
                 edges: false,
                 advanced: false,
+                scale: true,
             },
             startup: None,
             sent: None,
@@ -1952,6 +2373,10 @@ mod tests {
             };
             self.fake.reply(Reply::Status(Which::Inpainter, ready()));
             self.fake.reply(Reply::Status(Which::Segmenter, ready()));
+            for scale in [2, 4] {
+                self.fake
+                    .reply(Reply::Status(Which::Upscaler(scale), Status::NotLoaded));
+            }
             self.app.poll_worker();
         }
 
@@ -2361,7 +2786,7 @@ mod tests {
         h.frame(vec![]);
         assert_eq!(h.doc().path, wide);
         let canvas = h.app.canvas.as_ref().unwrap();
-        assert_eq!(crate::canvas::tests::finest_factor(canvas), 1);
+        assert_eq!(crate::canvas::tests::original_finest_factor(canvas), 1);
         assert!(h.app.startup.is_none());
     }
 
@@ -3516,5 +3941,475 @@ mod tests {
         h.app.undo_redo(false);
         h.app.undo_redo(false);
         assert!(h.doc().picture.pixels == after && !h.doc().has_mask());
+    }
+
+    // ---- Upscale ----
+
+    /// Switches to Upscale and starts it at `factor`; returns what the worker was given.
+    fn start_upscale(
+        h: &mut Harness,
+        factor: Factor,
+    ) -> (Rgb16, Option<Vec<u16>>, Arc<AtomicBool>) {
+        h.app.tool = Tool::Upscale;
+        h.app.factor = factor;
+        h.app.run_tool();
+        assert!(h.app.busy && h.app.upscaling.is_some());
+        let asked = h.fake.upscale();
+        assert_eq!(asked.factor, factor);
+        assert!(!asked.premultiplied, "a PNG's alpha is straight");
+        (asked.pixels, asked.alpha, asked.cancel)
+    }
+
+    /// The worker's answer: the pixels back, and the result at the factor's size, each pixel
+    /// (and alpha value) taken from the nearest one.
+    fn upscaled(pixels: Rgb16, alpha: Option<Vec<u16>>, factor: Factor) -> Reply {
+        let (w, h) = pixels.dimensions();
+        let (rw, rh) = result_size(w, h, factor).unwrap();
+        let from = |x: u32, y: u32| (x * w / rw, y * h / rh);
+        let big = Rgb16::from_fn(rw, rh, |x, y| {
+            let (sx, sy) = from(x, y);
+            *pixels.get_pixel(sx, sy)
+        });
+        let alpha = alpha.map(|a| {
+            (0..rw * rh)
+                .map(|i| {
+                    let (sx, sy) = from(i % rw, i / rw);
+                    a[(sy * w + sx) as usize]
+                })
+                .collect()
+        });
+        Reply::Upscaled {
+            pixels,
+            result: Ok(Some(crate::worker::Upscaled {
+                pixels: big,
+                alpha,
+                factor,
+                model: upscaler_name(factor.model_scale()),
+                seconds: 2.5,
+            })),
+        }
+    }
+
+    #[test]
+    fn a_fractional_factor_upscales_to_its_own_size() {
+        let mut h = Harness::new("upscale-fraction");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let factor = Factor::from_quarters(10).unwrap();
+        let (pixels, alpha, _) = start_upscale(&mut h, factor);
+        h.fake.reply(upscaled(pixels, alpha, factor));
+        h.frame(vec![]);
+        assert_eq!(h.doc().size(), (100, 75));
+        let history = h.doc().history();
+        let last = history.last().unwrap();
+        assert_eq!(
+            (last.label.as_str(), last.detail.as_str()),
+            ("Upscale 2.5×", "RealPLKSR 4× · 2.5 s")
+        );
+    }
+
+    #[test]
+    fn an_upscale_makes_the_photo_larger_and_undo_brings_it_back() {
+        let mut h = Harness::new("upscale");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let (pixels, alpha, _) = start_upscale(&mut h, Factor::X2);
+        assert!(alpha.is_none());
+        h.fake.reply(Reply::Progress { done: 1, total: 4 });
+        h.frame(vec![]);
+        let progress = h.app.upscaling.as_ref().map(|r| (r.done, r.total));
+        assert_eq!(progress, Some((1, 4)));
+        h.fake.reply(upscaled(pixels, None, Factor::X2));
+        h.frame(vec![]);
+        assert!(!h.app.busy && h.app.upscaling.is_none());
+        assert_eq!(h.doc().size(), (80, 60));
+        assert!(h.app.is_dirty());
+        let history = h.doc().history();
+        let last = history.last().unwrap();
+        assert_eq!(
+            (last.label.as_str(), last.detail.as_str()),
+            ("Upscale 2×", "RealPLKSR 2× · 2.5 s")
+        );
+        assert_eq!(h.app.last_run, Some(("upscale", 2.5)));
+
+        h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
+        assert_eq!(h.doc().size(), (40, 30));
+        h.frame(vec![key(Key::Z, Modifiers::COMMAND.plus(Modifiers::SHIFT))]);
+        assert_eq!(h.doc().size(), (80, 60));
+        assert!(h.app.save());
+        assert_eq!(Picture::open(&a).unwrap().pixels.dimensions(), (80, 60));
+    }
+
+    #[test]
+    fn a_cancelled_upscale_leaves_the_photo_as_it_was() {
+        let mut h = Harness::new("upscale-cancel");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let (pixels, _, cancel) = start_upscale(&mut h, Factor::X4);
+        h.frame(vec![key(Key::Escape, Modifiers::NONE)]);
+        assert!(cancel.load(Ordering::Relaxed), "Escape cancels");
+        h.fake.reply(Reply::Upscaled {
+            pixels,
+            result: Ok(None),
+        });
+        h.frame(vec![]);
+        assert!(!h.app.busy && h.app.upscaling.is_none() && h.app.message.is_none());
+        assert_eq!(h.doc().size(), (40, 30));
+        assert!(!h.app.is_dirty() && !h.doc().can_undo());
+    }
+
+    #[test]
+    fn escape_and_the_mask_tools_keys_leave_upscale_alone() {
+        let mut h = Harness::new("upscale-escape");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let doc = h.app.doc.as_mut().unwrap();
+        let before = doc.mask.clone();
+        doc.mask.put_pixel(3, 3, Luma([255]));
+        doc.push_stroke(&before, gumka_core::Rect::new(3, 3, 1, 1), false);
+        h.app.tool = Tool::Upscale;
+        h.frame(vec![key(Key::Escape, Modifiers::NONE)]);
+        assert!(
+            h.doc().has_mask(),
+            "Upscale doesn't show the mask, so Escape leaves it"
+        );
+        // The mask tools' keys don't switch tools or change the brush there.
+        h.app.cursor = CursorTool::Remove;
+        let brush = h.app.canvas.as_ref().unwrap().brush_radius;
+        for k in [Key::B, Key::E, Key::S, Key::OpenBracket, Key::CloseBracket] {
+            h.frame(vec![key(k, Modifiers::NONE)]);
+            assert_eq!(
+                (h.app.tool, h.app.cursor),
+                (Tool::Upscale, CursorTool::Remove),
+                "{k:?}"
+            );
+        }
+        assert_eq!(h.app.canvas.as_ref().unwrap().brush_radius, brush);
+        // In Erase they work. H picks nothing: Space and a drag pan in every tool.
+        h.frame(vec![key(Key::Num1, Modifiers::NONE)]);
+        h.frame(vec![key(Key::B, Modifiers::NONE)]);
+        assert_eq!((h.app.tool, h.app.cursor), (Tool::Erase, CursorTool::Brush));
+        h.frame(vec![key(Key::H, Modifiers::NONE)]);
+        assert_eq!(h.app.cursor, CursorTool::Brush);
+    }
+
+    #[test]
+    fn saving_during_an_upscale_waits_and_saves_the_larger_photo() {
+        let mut h = Harness::new("upscale-save");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let (pixels, _, _) = start_upscale(&mut h, Factor::X2);
+        h.frame(vec![key(Key::S, Modifiers::COMMAND)]);
+        assert_eq!(h.app.waiting_save.as_deref(), Some(a.as_path()));
+        assert_eq!(Picture::open(&a).unwrap().pixels.dimensions(), (40, 30));
+        h.fake.reply(upscaled(pixels, None, Factor::X2));
+        h.frame(vec![]);
+        assert_eq!(Picture::open(&a).unwrap().pixels.dimensions(), (80, 60));
+        assert!(!h.app.is_dirty());
+    }
+
+    #[test]
+    fn save_and_return_after_an_upscale_hands_back_the_larger_photo() {
+        let mut h = Harness::new("upscale-return");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        open_sent(&mut h, &a);
+        let (pixels, _, _) = start_upscale(&mut h, Factor::X2);
+        h.fake.reply(upscaled(pixels, None, Factor::X2));
+        h.frame(vec![]);
+        h.app.save_and_return(&h.ctx.clone());
+        assert!(h.app.allow_close);
+        assert_eq!(Picture::open(&a).unwrap().pixels.dimensions(), (80, 60));
+    }
+
+    #[test]
+    fn a_thread_that_stops_during_an_upscale_closes_the_photo() {
+        let mut h = Harness::new("upscale-stopped");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        start_upscale(&mut h, Factor::X2);
+        h.fake.reply(Reply::Stopped("gone".into()));
+        h.frame(vec![]);
+        assert!(h.app.doc.is_none() && h.app.upscaling.is_none() && !h.app.busy);
+        assert!(
+            h.app
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("lost the photo"))
+        );
+        assert!(
+            h.app
+                .upscalers
+                .iter()
+                .all(|s| matches!(s, Status::Unavailable(_)))
+        );
+    }
+
+    /// An upscaler that is unavailable refuses the scales it makes, as shown: 4× chosen for a
+    /// 20,000 px panorama shows 3.25×, which the 4× model makes.
+    #[test]
+    fn an_upscale_that_cant_run_says_why_and_starts_nothing() {
+        let mut h = Harness::new("upscale-refused");
+        h.ready();
+        let wide = h.picture("wide.png", 20000, 2);
+        h.open(&wide);
+        h.app.tool = Tool::Upscale;
+        h.fake.reply(Reply::Status(
+            Which::Upscaler(4),
+            Status::Unavailable("its files are missing".into()),
+        ));
+        h.app.poll_worker();
+        h.app.factor = Factor::X4;
+        h.app.run_tool();
+        assert!(!h.app.busy && h.fake.idle());
+        let message = h.app.message.take().unwrap();
+        assert!(
+            message.contains("Upscale is unavailable") && message.contains("missing"),
+            "{message}"
+        );
+
+        h.app.factor = Factor::X2;
+        h.app.run_tool();
+        assert_eq!(h.fake.upscale().factor, Factor::X2, "the 2× model is there");
+    }
+
+    /// The scale comes down to the largest that fits the photo, so that the slider, its label
+    /// and the action agree, and the action runs at it.
+    #[test]
+    fn the_scale_comes_down_to_what_fits_the_photo() {
+        let mut h = Harness::new("upscale-fit");
+        h.ready();
+        h.app.factor = Factor::X4;
+        // 20,000 px wide: 3.25× makes 65,000 px, 3.5× would be past 65,535.
+        let wide = h.picture("wide.png", 20000, 2);
+        h.open(&wide);
+        h.app.tool = Tool::Upscale;
+        h.frame(vec![]);
+        assert_eq!(h.app.effective_factor().to_string(), "3.25×");
+        assert_eq!(h.app.factor, Factor::X4, "the choice stays");
+        assert_eq!(
+            result_size(20000, 2, h.app.effective_factor()),
+            Ok((65000, 7))
+        );
+        assert_eq!(h.app.upscale_refused(), None, "the action is enabled");
+        h.frame(vec![key(Key::Enter, Modifiers::NONE)]);
+        let asked = h.fake.upscale();
+        assert_eq!(asked.factor, Factor::from_quarters(13).unwrap());
+        assert_eq!(
+            h.app.upscaling.as_ref().map(|r| r.factor),
+            Some(asked.factor)
+        );
+    }
+
+    /// The scale chosen stays the choice: a photo it doesn't fit shows the largest that fits,
+    /// and the next photo, which it fits, gets it again (review round 2: it stuck at 3.25×).
+    #[test]
+    fn the_chosen_scale_comes_back_for_a_photo_it_fits() {
+        let mut h = Harness::new("upscale-fit-next");
+        h.ready();
+        h.app.factor = Factor::X4;
+        h.app.tool = Tool::Upscale;
+        let wide = h.picture("wide.png", 20000, 2);
+        h.open(&wide);
+        h.frame(vec![]);
+        assert_eq!(h.app.effective_factor().to_string(), "3.25×");
+        // Erase on, as Upscale off, changes nothing either.
+        h.app.tool = Tool::Erase;
+        h.frame(vec![]);
+        let photo = h.picture("photo.png", 60, 40);
+        h.open(&photo);
+        h.app.tool = Tool::Upscale;
+        h.frame(vec![]);
+        assert_eq!(
+            (h.app.factor, h.app.effective_factor()),
+            (Factor::X4, Factor::X4)
+        );
+    }
+
+    /// The memory a large result can take, counted as the inspector does.
+    #[test]
+    fn the_memory_hint_counts_the_pyramids_and_the_undo_copy() {
+        // 16 MP to 64 MP: 64 x (7 + 2 x 5.33) + 16 x (7 + 5.33) million bytes.
+        let bytes = memory_needed(16_000_000, 64_000_000, false);
+        assert!((bytes - 1_328e6).abs() < 1e6, "{bytes}");
+        // An alpha channel is 2 bytes a pixel more, before and after.
+        let with_alpha = memory_needed(16_000_000, 64_000_000, true);
+        assert!((with_alpha - bytes - 160e6).abs() < 1e6, "{with_alpha}");
+    }
+
+    /// When not even the smallest scale fits, Upscale says so and doesn't run.
+    #[test]
+    fn a_photo_too_large_for_any_scale_says_so() {
+        let mut h = Harness::new("upscale-none-fits");
+        h.ready();
+        // 1.25× of 60,000 px is past 65,535.
+        let huge = h.picture("huge.png", 60000, 2);
+        h.open(&huge);
+        h.app.tool = Tool::Upscale;
+        h.frame(vec![]);
+        assert_eq!(
+            h.app.upscale_refused().as_deref(),
+            Some(AS_LARGE_AS_IT_GETS)
+        );
+        h.frame(vec![key(Key::Enter, Modifiers::NONE)]);
+        assert!(!h.app.busy && h.fake.idle());
+        assert_eq!(h.app.message.as_deref(), Some(AS_LARGE_AS_IT_GETS));
+    }
+
+    /// A scale that fits stays as chosen: only one too large for the photo comes down, and
+    /// nothing raises it again.
+    #[test]
+    fn a_scale_that_fits_is_left_as_chosen() {
+        let mut h = Harness::new("upscale-fit-kept");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        h.app.tool = Tool::Upscale;
+        for quarters in [5, 10, 13, 16] {
+            let factor = Factor::from_quarters(quarters).unwrap();
+            h.app.factor = factor;
+            h.frame(vec![]);
+            h.frame(vec![]);
+            assert_eq!(h.app.factor, factor);
+        }
+    }
+
+    /// An upscale can leave the scale too large for the larger photo; what Upscale makes comes
+    /// down then, so that the next upscale isn't refused, and goes back to the chosen scale
+    /// after an undo (review round 2: it stayed down).
+    #[test]
+    fn after_an_upscale_the_scale_comes_down_to_what_still_fits() {
+        let mut h = Harness::new("upscale-fit-after");
+        h.ready();
+        let wide = h.picture("wide.png", 20000, 2);
+        h.open(&wide);
+        let (pixels, alpha, _) = start_upscale(&mut h, Factor::X2);
+        h.frame(vec![]);
+        assert_eq!(h.app.factor, Factor::X2, "while it runs");
+        h.fake.reply(upscaled(pixels, alpha, Factor::X2));
+        h.frame(vec![]);
+        assert_eq!(h.doc().size(), (40000, 4));
+        // 1.5× of 40,000 px is 60,000; 1.75× would be 70,000.
+        assert_eq!(h.app.effective_factor().to_string(), "1.5×");
+        assert_eq!(h.app.factor, Factor::X2, "the choice stays");
+        assert_eq!(h.app.upscale_refused(), None);
+        h.frame(vec![key(Key::Z, Modifiers::COMMAND)]);
+        h.frame(vec![]);
+        assert_eq!(h.doc().size(), (20000, 2));
+        assert_eq!(h.app.effective_factor(), Factor::X2);
+    }
+
+    /// A TIFF's associated alpha goes to the upscale as premultiplied: 2 x 1, 8-bit RGBA,
+    /// ExtraSamples 1.
+    #[test]
+    fn an_associated_alpha_is_upscaled_as_premultiplied() {
+        let mut h = Harness::new("upscale-associated");
+        h.ready();
+        let entry = |tag: u16, ty: u16, count: u32, value: u32| {
+            [
+                &tag.to_le_bytes()[..],
+                &ty.to_le_bytes(),
+                &count.to_le_bytes(),
+                &value.to_le_bytes(),
+            ]
+            .concat()
+        };
+        // The directory at 8: 10 entries, so the bit depths start at 8 + 2 + 120 + 4 = 134 and
+        // the pixels at 142.
+        let mut tiff = b"II*\0\x08\0\0\0".to_vec();
+        tiff.extend(10u16.to_le_bytes());
+        for (tag, ty, count, value) in [
+            (256, 3, 1, 2),
+            (257, 3, 1, 1),
+            (258, 3, 4, 134),
+            (259, 3, 1, 1),
+            (262, 3, 1, 2),
+            (273, 4, 1, 142),
+            (277, 3, 1, 4),
+            (278, 3, 1, 1),
+            (279, 4, 1, 8),
+            (338, 3, 1, 1),
+        ] {
+            tiff.extend(entry(tag, ty, count, value));
+        }
+        tiff.extend(0u32.to_le_bytes());
+        tiff.extend([8, 0, 8, 0, 8, 0, 8, 0]);
+        tiff.extend([10, 20, 30, 128, 1, 2, 3, 255]);
+        let a = h.dir.join("associated.tif");
+        std::fs::write(&a, tiff).unwrap();
+        h.open(&a);
+        h.app.tool = Tool::Upscale;
+        h.app.run_tool();
+        let asked = h.fake.upscale();
+        assert_eq!(asked.alpha, Some(vec![128 * 257, 65535]));
+        assert!(asked.premultiplied);
+    }
+
+    #[test]
+    fn an_erase_after_an_upscale_works_at_the_new_size() {
+        let mut h = Harness::new("upscale-erase");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        let (pixels, _, _) = start_upscale(&mut h, Factor::X2);
+        h.fake.reply(upscaled(pixels, None, Factor::X2));
+        h.frame(vec![]);
+        let big = h.doc().picture.pixels.clone();
+
+        h.app.tool = Tool::Erase;
+        let doc = h.app.doc.as_mut().unwrap();
+        let before = doc.mask.clone();
+        doc.mask.put_pixel(70, 50, Luma([255]));
+        doc.push_stroke(&before, gumka_core::Rect::new(70, 50, 1, 1), false);
+        h.app.run_tool();
+        let (pixels, mask) = h.fake.erase();
+        assert_eq!(
+            (pixels.dimensions(), mask.dimensions()),
+            ((80, 60), (80, 60))
+        );
+        h.fake.reply(erased(pixels));
+        h.frame(vec![]);
+        assert_ne!(h.doc().picture.pixels, big);
+        h.app.undo_redo(true); // the erase
+        h.app.undo_redo(true); // the stroke
+        assert_eq!(h.doc().picture.pixels, big);
+        h.app.undo_redo(true); // the upscale
+        assert_eq!(h.doc().size(), (40, 30));
+    }
+
+    #[test]
+    fn an_alpha_channel_is_upscaled_and_saved_with_the_photo() {
+        let mut h = Harness::new("upscale-alpha");
+        h.ready();
+        let a = h.dir.join("rgba.png");
+        let rgba = gumka_core::image::ImageBuffer::<gumka_core::image::Rgba<u16>, _>::from_fn(
+            10,
+            6,
+            |x, y| {
+                gumka_core::image::Rgba([
+                    x as u16 * 5000,
+                    y as u16 * 9000,
+                    700,
+                    1000 + x as u16 * 6000,
+                ])
+            },
+        );
+        rgba.save(&a).unwrap();
+        h.open(&a);
+        let (pixels, alpha, _) = start_upscale(&mut h, Factor::X2);
+        assert_eq!(alpha.as_ref().map(Vec::len), Some(60));
+        h.fake.reply(upscaled(pixels, alpha, Factor::X2));
+        h.frame(vec![]);
+        assert!(h.app.save());
+        let back = Picture::open(&a).unwrap();
+        assert_eq!(back.pixels.dimensions(), (20, 12));
+        assert_eq!(back.alpha().map(<[u16]>::len), Some(240));
+        assert_eq!(back.alpha().unwrap()[0], 1000);
     }
 }
