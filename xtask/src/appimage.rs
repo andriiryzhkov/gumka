@@ -543,8 +543,8 @@ mod tests {
         }
         let main = include_str!("../../crates/gumka-app/src/main.rs");
         assert!(
-            main.contains(&format!(".with_app_id(\"{IDENTIFIER}\")")),
-            "the window's app id is the identifier"
+            main.contains(&format!("const APP_ID: &str = \"{IDENTIFIER}\";")),
+            "the windows' app id is the identifier"
         );
     }
 }

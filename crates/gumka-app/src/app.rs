@@ -233,6 +233,8 @@ pub struct GumkaApp {
     /// How many of the files hovering over the window were given up on: AppKit can end a drag
     /// without telling a window that was busy, and then the hover never ends.
     stale_hover: usize,
+    /// The main window's zoom (fullscreen) button is off, while a dialog has a window.
+    zoom_off: bool,
 }
 
 impl GumkaApp {
@@ -285,6 +287,7 @@ impl GumkaApp {
             startup: path,
             sent: None,
             stale_hover: 0,
+            zoom_off: false,
         }
     }
 
@@ -1973,44 +1976,46 @@ impl GumkaApp {
         );
     }
 
-    fn dialogs(&mut self, ctx: &egui::Context) {
-        if let Some(message) = self.message.clone() {
-            egui::Modal::new(egui::Id::unique("message")).show(ctx, |ui| {
-                ui.set_max_width(420.0);
-                ui.label(message);
-                ui.add_space(8.0);
-                if ui.button("OK").clicked()
-                    || ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape))
-                {
-                    self.message = None;
-                }
-            });
+    /// The message, else "Save changes?", each in a window of its own (see [`panels`]). Once
+    /// answered, the window closes, and the next frame runs what waited for the answer.
+    fn dialogs(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        if let Some(message) = &self.message {
+            if panels::message(ui, message) {
+                self.message = None;
+                ctx.request_repaint();
+            }
             return;
         }
         if self.pending.is_none() {
             return;
         }
         let name = self.doc.as_ref().map(Document::name).unwrap_or_default();
-        let mut answer = None;
-        egui::Modal::new(egui::Id::unique("unsaved")).show(ctx, |ui| {
-            ui.set_max_width(420.0);
-            ui.heading(format!("Save changes to {name}?"));
-            ui.label("Your changes will be lost if you don't save them.");
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    answer = Some(true);
-                }
-                if ui.button("Don't Save").clicked() {
-                    answer = Some(false);
-                }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                    self.pending = None;
-                }
-            });
-        });
-        if let Some(save) = answer {
-            self.answer(ctx, save);
+        match panels::save_changes(ui, &name) {
+            Some(panels::Answer::Save) => self.answer(&ctx, true),
+            Some(panels::Answer::DontSave) => self.answer(&ctx, false),
+            Some(panels::Answer::Cancel) => self.pending = None,
+            None => return,
+        }
+        ctx.request_repaint();
+    }
+
+    /// Turns the main window's zoom button off while a dialog is up, on macOS: it would take the
+    /// main window to a fullscreen Space without the dialog, or out of one with the dialog
+    /// behind it. Elsewhere maximizing leaves the dialog alone, so the button stays. Only on a
+    /// change: a command repaints the window.
+    fn zoom_button(&mut self, ctx: &egui::Context) {
+        let off = cfg!(target_os = "macos") && self.dialog_open();
+        if off != self.zoom_off {
+            self.zoom_off = off;
+            ctx.send_viewport_cmd_to(
+                egui::ViewportId::ROOT,
+                egui::ViewportCommand::EnableButtons {
+                    close: true,
+                    minimized: true,
+                    maximize: !off,
+                },
+            );
         }
     }
 }
@@ -2165,7 +2170,8 @@ impl eframe::App for GumkaApp {
         }
 
         self.drop_hint(&ctx);
-        self.dialogs(&ctx);
+        self.dialogs(ui);
+        self.zoom_button(&ctx);
         self.update_title(&ctx);
         // Again after anything this frame that saved or changed the picture.
         crate::quit::set_unsaved(self.has_unsaved_work() && !self.allow_close);
@@ -2232,9 +2238,41 @@ fn megapixels(w: u32, h: u32) -> String {
     }
 }
 
-/// The native open and save panels. Tests never show one: they count them instead.
+/// The native open and save panels, and the dialogs' windows. Tests never show one: they count
+/// the panels instead, and leave the dialogs unanswered unless they give an answer or press a
+/// key.
 mod panels {
     use std::path::PathBuf;
+
+    use eframe::egui::{self, Key, Ui};
+
+    /// The answer to "Save changes?".
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Answer {
+        Save,
+        DontSave,
+        Cancel,
+    }
+
+    /// What Enter and Escape answer in a dialog. Escape always answers, as the window's close
+    /// button does.
+    #[derive(Clone, Copy)]
+    struct Keys<T> {
+        enter: Option<T>,
+        escape: T,
+    }
+
+    impl<T: Copy> Keys<T> {
+        fn answer(&self, input: &egui::InputState) -> Option<T> {
+            if input.key_pressed(Key::Escape) {
+                Some(self.escape)
+            } else if input.key_pressed(Key::Enter) {
+                self.enter
+            } else {
+                None
+            }
+        }
+    }
 
     #[cfg(not(test))]
     pub fn pick_file(dialog: rfd::FileDialog) -> Option<PathBuf> {
@@ -2246,10 +2284,267 @@ mod panels {
         dialog.save_file()
     }
 
+    // Keys pressed in the main window answer a dialog too, as they do in its own window: the
+    // main window can have the keyboard meanwhile (the user clicked it, or the system kept the
+    // focus there). Read here, outside the dialogs, so that tests cover them.
+
+    /// Shows `message` until it is dismissed. Returns whether it was, this frame.
+    pub fn message(ui: &mut Ui, message: &str) -> bool {
+        let keys = Keys {
+            enter: Some(()),
+            escape: (),
+        };
+        let pressed = ui.input(|i| keys.answer(i));
+        pressed
+            .or_else(|| message_dialog(ui, message, keys))
+            .is_some()
+    }
+
+    /// Asks "Save changes to `name`?". Returns the answer in the frame it is given.
+    pub fn save_changes(ui: &mut Ui, name: &str) -> Option<Answer> {
+        let keys = Keys {
+            enter: None,
+            escape: Answer::Cancel,
+        };
+        let pressed = ui.input(|i| keys.answer(i));
+        pressed.or_else(|| save_changes_dialog(ui, name, keys))
+    }
+
+    #[cfg(not(test))]
+    fn message_dialog(ui: &mut Ui, message: &str, keys: Keys<()>) -> Option<()> {
+        let id = egui::Id::unique(("message", message));
+        let message = message.to_owned();
+        dialog(ui, id, keys, move |ui| {
+            ui.label(&message);
+            ui.add_space(8.0);
+            ui.button("OK").clicked().then_some(())
+        })
+    }
+
+    #[cfg(not(test))]
+    fn save_changes_dialog(ui: &mut Ui, name: &str, keys: Keys<Answer>) -> Option<Answer> {
+        let question = format!("Save changes to {name}?");
+        dialog(ui, egui::Id::unique(&question), keys, move |ui| {
+            ui.heading(&question);
+            ui.label("Your changes will be lost if you don't save them.");
+            ui.add_space(8.0);
+            let mut answer = None;
+            ui.horizontal(|ui| {
+                for (label, button) in [
+                    ("Save", Answer::Save),
+                    ("Don't Save", Answer::DontSave),
+                    ("Cancel", Answer::Cancel),
+                ] {
+                    if ui.button(label).clicked() {
+                        answer = Some(button);
+                    }
+                }
+            });
+            answer
+        })
+    }
+
+    /// The answer given in a dialog's window, until the main window's pass takes it.
+    type Answered<T> = std::sync::Arc<egui::mutex::Mutex<Option<T>>>;
+
+    /// Shows `content` in a window of its own, centered on the main window, which stays dimmed
+    /// and takes no input meanwhile: clicking or focusing it brings the dialog back to the
+    /// front. The answer is a button `content` returns, a key `keys` maps, or the window's
+    /// close button (as Escape); the first one given is returned in the main window's next
+    /// pass, which leaves the dialog out, and that closes its window.
+    ///
+    /// `content` only lays the dialog out and returns the button clicked, if any: it runs
+    /// whenever the dialog's window repaints, and also unseen (and disabled) in the main
+    /// window, to size the dialog. `id` comes from what the dialog says: a window is repainted
+    /// only for its own input, so another message is another window.
+    fn dialog<T: Copy + Send + Sync + 'static>(
+        ui: &mut Ui,
+        id: egui::Id,
+        keys: Keys<T>,
+        content: impl Fn(&mut Ui) -> Option<T> + Send + Sync + 'static,
+    ) -> Option<T> {
+        const WIDTH: f32 = 420.0;
+        const MARGIN: i8 = 16;
+        let ctx = ui.ctx().clone();
+        let id = egui::ViewportId(id);
+        let new = ctx.input(|i| !i.raw.viewports.contains_key(&id));
+        let answered = ctx.data_mut(|d| {
+            if new {
+                // An answer an earlier window gave after it was left out isn't for this one.
+                d.remove::<Answered<T>>(id.0);
+            }
+            d.get_temp_mut_or_default::<Answered<T>>(id.0).clone()
+        });
+        let closed = ctx.input(|i| {
+            i.raw
+                .viewports
+                .get(&id)
+                .is_some_and(egui::ViewportInfo::close_requested)
+        });
+        let answer = answered.lock().take().or(closed.then_some(keys.escape));
+        if answer.is_some() {
+            ctx.data_mut(|d| d.remove::<Answered<T>>(id.0));
+            return answer;
+        }
+        if new {
+            // Its window is made at the start of the next pass.
+            ctx.request_repaint();
+        }
+        // The window fits its content, laid out unseen at most `WIDTH` wide: rounded up, and a
+        // point wider, so that its text wraps in the window as it did here even once the
+        // window's size is rounded to whole pixels. Where the window's scale lays the text out
+        // wider still, the window grows (below).
+        let mut sizing = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH, 4096.0),
+                ))
+                .invisible(),
+        );
+        content(&mut sizing);
+        let size = sizing.min_rect().size().ceil()
+            + egui::vec2(1.0, 0.0)
+            + egui::Vec2::splat(2.0 * f32::from(MARGIN));
+        let mut builder = egui::ViewportBuilder::default()
+            .with_title("Gumka")
+            .with_app_id(crate::APP_ID)
+            .with_inner_size(size)
+            .with_resizable(false)
+            .with_minimize_button(false)
+            .with_maximize_button(false)
+            .with_taskbar(false)
+            // So that X11 window managers draw a dialog's title bar: close only. (On Wayland
+            // winit draws it, with the buttons the desktop's layout names: it takes no others.)
+            .with_window_type(egui::X11WindowType::Dialog);
+        // Centered on the main window, title bars aside (Wayland doesn't say where windows
+        // are), until its window has told its scale and title bar; from then on it stays where
+        // it is, however it or the main window is moved.
+        let placed = id.0.with("placed");
+        if new {
+            ctx.data_mut(|d| d.remove::<egui::Pos2>(placed));
+        }
+        let kept = ctx.data(|d| d.get_temp::<egui::Pos2>(placed));
+        let position = kept.or_else(|| {
+            let (outer, inner) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
+            let (outer, inner) = (outer?, inner?);
+            let title_bar = title_bar(&ctx, id).unwrap_or(inner.min - outer.min);
+            let center = inner.center() * scale_to_main(&ctx, id);
+            Some(center - size / 2.0 - title_bar)
+        });
+        if let Some(position) = position {
+            builder = builder.with_position(position);
+            if kept.is_none() && told(&ctx, id) {
+                ctx.data_mut(|d| d.insert_temp(placed, position));
+            }
+        }
+        let backdrop = egui::Modal::new(id.0)
+            .frame(egui::Frame::NONE)
+            .show(&ctx, |_| {});
+        let focused = ctx.input(|i| i.events.contains(&egui::Event::WindowFocused(true)));
+        if backdrop.backdrop_response.clicked() || focused {
+            ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+        }
+        ctx.show_viewport_deferred(id, builder, move |ui, _| {
+            let frame = egui::Frame::NONE
+                .fill(ui.visuals().window_fill)
+                .inner_margin(egui::Margin::same(MARGIN));
+            let (clicked, used) = egui::CentralPanel::default()
+                .frame(frame)
+                .show(ui, |ui| {
+                    let clicked = content(ui);
+                    (clicked, ui.min_rect().size())
+                })
+                .inner;
+            // Where this window's scale lays the text out wider than the main window's did, it
+            // wraps onto more lines: the window grows to fit, so nothing is cut off.
+            let has = ui.input(|i| i.viewport().inner_rect.map(|r| r.size()));
+            let needed = used + egui::Vec2::splat(2.0 * f32::from(MARGIN));
+            if let Some(size) = has.and_then(|has| grown(has, needed)) {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+            let closed = ui.input(|i| i.viewport().close_requested());
+            let answer = clicked
+                .or_else(|| ui.input(|i| keys.answer(i)))
+                .or(closed.then_some(keys.escape));
+            if let Some(answer) = answer {
+                answered.lock().get_or_insert(answer);
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+        });
+        None
+    }
+
+    /// The size a dialog's window that `has` this size grows to, if its content `needed` more.
+    fn grown(has: egui::Vec2, needed: egui::Vec2) -> Option<egui::Vec2> {
+        let short = needed.x > has.x + 0.5 || needed.y > has.y + 0.5;
+        short.then(|| needed.max(has).ceil())
+    }
+
+    /// Whether dialog `id`'s window has told its scale and where it is, title bar and all.
+    fn told(ctx: &egui::Context, id: egui::ViewportId) -> bool {
+        ctx.input(|i| {
+            i.raw.viewports.get(&id).is_some_and(|v| {
+                v.native_pixels_per_point.is_some()
+                    && v.inner_rect.is_some()
+                    && v.outer_rect.is_some()
+            })
+        })
+    }
+
+    /// How far a dialog's content is from its window's corner, once a dialog's window has said:
+    /// until then, the main window's offset stands in for it (which is none in fullscreen).
+    fn title_bar(ctx: &egui::Context, id: egui::ViewportId) -> Option<egui::Vec2> {
+        let remembered = egui::Id::unique("dialog title bar");
+        let own = ctx.input(|i| {
+            let dialog = i.raw.viewports.get(&id)?;
+            Some(dialog.inner_rect?.min - dialog.outer_rect?.min)
+        });
+        ctx.data_mut(|d| match own {
+            Some(offset) => {
+                d.insert_temp(remembered, offset);
+                Some(offset)
+            }
+            None => d.get_temp(remembered),
+        })
+    }
+
+    /// What the main window's positions are scaled by to be dialog `id`'s (sizes are the same
+    /// on every monitor). Positions are a window's pixels over its own scale, and a new window
+    /// takes the scale of the monitor it is first put on (on X11 the one under the pointer):
+    /// where that isn't the main window's, the dialog moves once its window tells its scale.
+    /// On macOS positions are in points on every monitor.
+    fn scale_to_main(ctx: &egui::Context, id: egui::ViewportId) -> f32 {
+        if cfg!(target_os = "macos") {
+            return 1.0;
+        }
+        ctx.input(|i| {
+            let main = i.viewport().native_pixels_per_point?;
+            let dialog = i.raw.viewports.get(&id)?.native_pixels_per_point?;
+            Some(main / dialog)
+        })
+        .unwrap_or(1.0)
+    }
+
     #[cfg(test)]
     thread_local! {
         /// Panels shown on this thread (each test runs on its own).
         pub static SHOWN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// The next answer to "Save changes?", taken when the question is shown.
+        pub static ANSWER: std::cell::Cell<Option<Answer>> = const { std::cell::Cell::new(None) };
+        /// Whether the next message shown is dismissed, as with its OK button.
+        pub static DISMISS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    #[cfg(test)]
+    fn message_dialog(_: &mut Ui, _: &str, _: Keys<()>) -> Option<()> {
+        DISMISS.with(std::cell::Cell::take).then_some(())
+    }
+
+    #[cfg(test)]
+    fn save_changes_dialog(_: &mut Ui, _: &str, _: Keys<Answer>) -> Option<Answer> {
+        ANSWER.with(std::cell::Cell::take)
     }
 
     #[cfg(test)]
@@ -2262,6 +2557,152 @@ mod panels {
     pub fn save_file(_: rfd::FileDialog) -> Option<PathBuf> {
         SHOWN.with(|n| n.set(n.get() + 1));
         None
+    }
+
+    /// The dialog's window as the main window asks for it, in headless passes: egui records
+    /// the window it would open (its builder and its own pass) without opening one.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use egui::{Rect, ViewportCommand, ViewportId, ViewportInfo, pos2, vec2};
+
+        fn id() -> egui::Id {
+            egui::Id::unique("a test dialog")
+        }
+
+        /// A window at `outer`, with a title bar 30 points high, of scale 1.
+        fn window(outer: Rect) -> ViewportInfo {
+            ViewportInfo {
+                native_pixels_per_point: Some(1.0),
+                outer_rect: Some(outer),
+                inner_rect: Some(outer.with_min_y(outer.min.y + 30.0)),
+                ..Default::default()
+            }
+        }
+
+        /// A main window's pass, the main window at `main` and the dialog's window telling
+        /// `opened`, once it has one. Returns what the dialog's window is asked to be.
+        fn pass(
+            ctx: &egui::Context,
+            main: Rect,
+            opened: Option<ViewportInfo>,
+        ) -> egui::ViewportOutput {
+            let mut input = egui::RawInput::default();
+            input.viewports.insert(ViewportId::ROOT, window(main));
+            if let Some(info) = opened {
+                input.viewports.insert(ViewportId(id()), info);
+            }
+            let keys = Keys {
+                enter: Some(()),
+                escape: (),
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                dialog(ui, id(), keys, |ui| {
+                    ui.label("Couldn't open the photo.");
+                    ui.button("OK").clicked().then_some(())
+                });
+            });
+            let window = output
+                .viewport_output
+                .remove(&ViewportId(id()))
+                .expect("the dialog has a window");
+            output.drop_without_applying_deltas();
+            window
+        }
+
+        /// A dialog opens centered on the main window, and once its window has told where it
+        /// is, it stays: neither the main window moving nor the dialog being dragged pulls it
+        /// back.
+        #[test]
+        fn a_dialog_is_placed_once_then_stays() {
+            let ctx = egui::Context::default();
+            ctx.set_embed_viewports(false);
+            let main = Rect::from_min_size(pos2(100.0, 100.0), vec2(800.0, 600.0));
+            let first = pass(&ctx, main, None).builder;
+            let (at, size) = (first.position.unwrap(), first.inner_size.unwrap());
+            let center = main.with_min_y(130.0).center();
+            assert_eq!(
+                at + size / 2.0 + vec2(0.0, 30.0),
+                center,
+                "centered, title bars aside"
+            );
+
+            let opened = window(Rect::from_min_size(at, size + vec2(0.0, 30.0)));
+            assert_eq!(
+                pass(&ctx, main, Some(opened.clone())).builder.position,
+                Some(at)
+            );
+            let dragged = window(opened.outer_rect.unwrap().translate(vec2(-50.0, 40.0)));
+            let moved = main.translate(vec2(300.0, 0.0));
+            assert_eq!(
+                pass(&ctx, moved, Some(dragged)).builder.position,
+                Some(at),
+                "it stays where it is"
+            );
+        }
+
+        #[test]
+        fn a_window_grows_only_for_more_than_rounding() {
+            let has = vec2(300.0, 120.0);
+            assert_eq!(grown(has, has), None);
+            assert_eq!(
+                grown(has, vec2(300.3, 119.0)),
+                None,
+                "less than a pixel's rounding"
+            );
+            assert_eq!(
+                grown(has, vec2(300.0, 138.4)),
+                Some(vec2(300.0, 139.0)),
+                "a line more"
+            );
+            assert_eq!(grown(has, vec2(301.2, 100.0)), Some(vec2(302.0, 120.0)));
+        }
+
+        /// A dialog's window too small for its content (its scale wrapped the text onto one
+        /// more line) asks to grow to fit; one that fits asks nothing.
+        #[test]
+        fn a_window_too_small_for_its_dialog_grows() {
+            let ctx = egui::Context::default();
+            ctx.set_embed_viewports(false);
+            let main = Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0));
+            let asked = pass(&ctx, main, None);
+            let size = asked.builder.inner_size.unwrap();
+            let ui = asked.viewport_ui_cb.expect("the window's pass");
+            let own_pass = |height: f32| {
+                let mut input = egui::RawInput {
+                    viewport_id: ViewportId(id()),
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(size.x, height))),
+                    ..Default::default()
+                };
+                let inner = Rect::from_min_size(pos2(0.0, 30.0), vec2(size.x, height));
+                input.viewports.insert(
+                    ViewportId(id()),
+                    ViewportInfo {
+                        native_pixels_per_point: Some(1.0),
+                        inner_rect: Some(inner),
+                        outer_rect: Some(inner.with_min_y(0.0)),
+                        ..Default::default()
+                    },
+                );
+                let mut output = ctx.run_ui(input, |ui_| ui(ui_));
+                let commands = output
+                    .viewport_output
+                    .remove(&ViewportId(id()))
+                    .map(|v| v.commands)
+                    .unwrap_or_default();
+                output.drop_without_applying_deltas();
+                commands.into_iter().find_map(|c| match c {
+                    ViewportCommand::InnerSize(size) => Some(size),
+                    _ => None,
+                })
+            };
+            assert_eq!(own_pass(size.y), None, "it fits");
+            let grown = own_pass(size.y - 20.0).expect("too small: it asks for more");
+            assert!(
+                grown.y >= size.y && grown.x >= size.x,
+                "{grown:?} for {size:?}"
+            );
+        }
     }
 }
 
@@ -2338,6 +2779,7 @@ mod tests {
             startup: None,
             sent: None,
             stale_hover: 0,
+            zoom_off: false,
         }
     }
 
@@ -2732,6 +3174,160 @@ mod tests {
         let commands = h.close();
         assert!(!commands.contains(&ViewportCommand::CancelClose));
         assert!(h.app.pending.is_none());
+    }
+
+    /// The answer to "Save changes?" is acted on in the frame it comes, whichever it is.
+    #[test]
+    fn the_answer_to_save_changes_is_acted_on() {
+        let mut h = Harness::new("close-answer");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        h.erase();
+        h.close();
+        assert!(
+            matches!(h.app.pending, Some(Pending::Quit)),
+            "asks until answered"
+        );
+
+        panels::ANSWER.with(|answer| answer.set(Some(panels::Answer::Cancel)));
+        h.frame(vec![]);
+        assert!(
+            h.app.pending.is_none() && !h.app.allow_close,
+            "Cancel stays"
+        );
+        assert!(h.doc().is_dirty());
+
+        panels::ANSWER.with(|answer| answer.set(Some(panels::Answer::Save)));
+        let commands = h.close();
+        assert!(!h.doc().is_dirty(), "saved");
+        assert!(h.app.allow_close && commands.contains(&ViewportCommand::Close));
+
+        let mut h = Harness::new("close-answer-dont-save");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        let bytes = std::fs::read(&a).unwrap();
+        h.open(&a);
+        h.erase();
+        panels::ANSWER.with(|answer| answer.set(Some(panels::Answer::DontSave)));
+        let commands = h.close();
+        assert!(h.app.allow_close && commands.contains(&ViewportCommand::Close));
+        assert_eq!(std::fs::read(&a).unwrap(), bytes, "not saved");
+    }
+
+    /// Enter or Escape dismisses a message; Escape cancels "Save changes?", which leaves Enter
+    /// alone.
+    #[test]
+    fn enter_and_escape_answer_the_dialogs() {
+        let answers = |event: Event| {
+            let ctx = egui::Context::default();
+            let mut answers = (false, None);
+            let input = RawInput {
+                events: vec![event],
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                answers = (
+                    panels::message(ui, "Hello"),
+                    panels::save_changes(ui, "a.png"),
+                );
+            })
+            .drop_without_applying_deltas();
+            answers
+        };
+        assert_eq!(answers(key(Key::Enter, Modifiers::NONE)), (true, None));
+        let cancel = Some(panels::Answer::Cancel);
+        assert_eq!(answers(key(Key::Escape, Modifiers::NONE)), (true, cancel));
+        assert_eq!(answers(key(Key::A, Modifiers::NONE)), (false, None));
+    }
+
+    /// The main window can have the keyboard while a dialog's window is up: its keys answer
+    /// the dialog.
+    #[test]
+    fn keys_in_the_main_window_answer_the_dialogs() {
+        let mut h = Harness::new("dialog-keys");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        h.erase();
+        h.close();
+        h.frame(vec![key(Key::Enter, Modifiers::NONE)]);
+        assert!(
+            matches!(h.app.pending, Some(Pending::Quit)),
+            "Enter isn't an answer"
+        );
+        h.frame(vec![key(Key::Escape, Modifiers::NONE)]);
+        assert!(
+            h.app.pending.is_none() && !h.app.allow_close,
+            "Escape cancels"
+        );
+        assert!(h.doc().is_dirty());
+
+        h.app.message = Some("Hello".into());
+        h.frame(vec![]);
+        assert!(h.app.message.is_some());
+        h.frame(vec![key(Key::Enter, Modifiers::NONE)]);
+        assert!(h.app.message.is_none(), "Enter dismisses a message");
+    }
+
+    /// Dismissing a message lets what waited for it go on: here an open that waited for a save
+    /// that failed, which then asks about the unsaved changes.
+    #[test]
+    fn dismissing_a_message_lets_what_waited_for_it_run() {
+        let mut h = Harness::new("dismiss");
+        h.ready();
+        let (a, b) = (h.picture("a.png", 40, 30), h.picture("b.png", 24, 36));
+        h.open(&a);
+        let pixels = start_erase(&mut h);
+        assert!(!h.app.save_to(h.dir.join("missing").join("a.png")));
+        h.drop_file(&b);
+        h.fake.reply(erased(pixels));
+        h.frame(vec![]);
+        assert!(h.app.message.as_deref().unwrap().contains("Couldn't save"));
+        h.frame(vec![]);
+        assert!(h.app.message.is_some() && h.app.pending.is_none(), "waits");
+
+        panels::DISMISS.with(|dismiss| dismiss.set(true));
+        h.frame(vec![]);
+        assert!(h.app.message.is_none(), "dismissed");
+        h.frame(vec![]);
+        assert!(matches!(h.app.pending, Some(Pending::Open(_))), "asks");
+        panels::ANSWER.with(|answer| answer.set(Some(panels::Answer::DontSave)));
+        h.frame(vec![]);
+        assert_eq!(h.doc().path, b, "then opens");
+    }
+
+    /// On macOS the main window's zoom button is off while a dialog is up, however the dialog
+    /// goes. Elsewhere maximizing leaves the dialog alone, and the button stays on.
+    #[test]
+    fn the_zoom_button_is_off_on_macos_while_a_dialog_is_up() {
+        let zoom = |on| ViewportCommand::EnableButtons {
+            close: true,
+            minimized: true,
+            maximize: on,
+        };
+        let buttons = |c: &ViewportCommand| matches!(c, ViewportCommand::EnableButtons { .. });
+        let mut h = Harness::new("zoom");
+        h.ready();
+        let a = h.picture("a.png", 40, 30);
+        h.open(&a);
+        h.erase();
+        if !cfg!(target_os = "macos") {
+            assert!(!h.close().iter().any(buttons), "not off here");
+            h.app.message = Some("Hello".into());
+            assert!(!h.frame(vec![]).iter().any(buttons));
+            return;
+        }
+        assert!(h.close().contains(&zoom(false)));
+        let commands = h.frame(vec![]);
+        assert!(!commands.iter().any(buttons), "only on a change");
+        panels::ANSWER.with(|answer| answer.set(Some(panels::Answer::Cancel)));
+        assert!(h.frame(vec![]).contains(&zoom(true)), "answered");
+
+        h.app.message = Some("Hello".into());
+        assert!(h.frame(vec![]).contains(&zoom(false)));
+        h.app.message = None;
+        assert!(h.frame(vec![]).contains(&zoom(true)), "gone unanswered");
     }
 
     // ---- A3: a failing or stopped worker ----

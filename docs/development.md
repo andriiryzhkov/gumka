@@ -120,8 +120,13 @@ LCMS2_LIB_DIR=/tmp/fake-lcms cargo clippy --workspace --all-targets \
   - `gumka-core/tests/model_space.rs`: the color conversion for the model (linear, very wide and
     camera profiles).
   - `gumka-app/src/app.rs` tests: a headless harness that runs the app's `logic` and `ui` with a
-    fake worker (`eframe::Frame::_new_kittest()`); file panels go through a `panels` seam that
-    only counts calls under `cfg(test)`, so no test can open a real panel.
+    fake worker (`eframe::Frame::_new_kittest()`); file panels and dialogs go through a
+    `panels` seam, so no test opens a window. Under `cfg(test)` it only counts the panels, and
+    the dialogs' windows (`message_dialog`, `save_changes_dialog`) stay unanswered unless a
+    test sets `panels::ANSWER` (for "Save changes?") or `panels::DISMISS` (a message's OK).
+    Enter and Escape in the main window are read outside those stand-ins, so tests cover them.
+    The dialog windows themselves are tested in `panels::tests`: in a headless pass egui records
+    the window it would open (where and how large) and its own pass, without opening one.
 - Tests must not need the downloaded models, Core ML or ONNX Runtime. A test that does is
   `#[ignore]` and runs with `cargo test -p gumka-infer -- --ignored` (on Linux, against the
   system's ONNX Runtime; `--release` makes it several times faster). The compiled-model cache protocol is tested
@@ -140,13 +145,26 @@ For checks that need the GUI (dialogs, quitting, drag and drop, the screen's col
 - A process started from a shell tool dies when that shell call ends, so launch, interact and
   capture in one call: `./target/release/gumka FILE & PID=$!; sleep 3; …; kill -9 $PID`. Never
   `wait` on it; a plain `kill` may not stop it.
-- Find the window with `CGWindowListCopyWindowInfo` (owner name `gumka`, layer 0) and capture
-  it with `screencapture -x -o -l <window id> out.png`. Screenshots are in the display's color
-  space with its profile embedded; convert through that profile before comparing colors.
+- Find the windows with `CGWindowListCopyWindowInfo` (owner name `gumka`, layer 0; the list is
+  front to back) and capture one with `screencapture -x -o -l <window id> out.png`. Each
+  dialog is a layer-0 window of the same process: tell it from the main window by title (the
+  main window is `<file> — Gumka` with a photo open, a dialog just `Gumka`) or by size.
+  Screenshots are in the display's color space with its profile embedded; convert through that
+  profile before comparing colors.
 - Post mouse and key events with `CGEvent` (Swift scripts work well). Synthetic clicks need
-  about 250 ms after moving the pointer and about 120 ms between press and release.
+  about 250 ms after moving the pointer and about 120 ms between press and release. Set a key
+  event's flags explicitly (`event.flags = []`, or `.maskCommand`): created from a nil source
+  it can carry stale modifiers, and Return arrives as ⌘Return.
+- Posted events go to the frontmost app, whichever it is: check that it is Gumka
+  (`NSWorkspace.shared.frontmostApplication`) before posting.
 - Run with a temporary `HOME` so the user's caches, settings and the open panel's Recents stay
   out of the test. Don't share screenshots that show the user's files.
+- To drive the app without its models (each Core ML load from a new path costs a plan, see
+  below), build a copy of the sources outside the repository and run it from outside the
+  repository, with `$GUMKA_MODELS` unset. The repository's `models/` is found through a path
+  compiled in (`gumka_infer::models::repository_dir`, from `CARGO_MANIFEST_DIR`), so the copy
+  looks in its own, empty `models/`; `./models` is relative to the working directory, and the
+  temporary `HOME` keeps the user's Application Support folder out.
 
 ## Core ML's plan cache costs disk space
 
