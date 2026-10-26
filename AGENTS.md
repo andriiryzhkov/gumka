@@ -116,15 +116,17 @@ and Windows from a Mac needs a dummy Little CMS library; see
 
 - Unit tests live next to the code. Format round trips are in
   `crates/gumka-core/src/round_trips.rs`; app behavior is tested headless in `app.rs`'s tests
-  with a fake worker; file panels go through the `panels` seam and must never open in a test.
+  with a fake worker; file panels and dialogs go through the `panels` seam and must never open
+  in a test.
 - Tests must run without the downloaded models, Core ML and ONNX Runtime. A test that needs
   them is `#[ignore]`d. Use stand-ins (fake inpainters, segmenters, compile and load closures).
 - Make test files (generated pictures, lcms2-built or macOS system profiles, hand-built bytes).
   Never use the user's personal photos.
 - Driving the real app is sometimes needed: see
   [docs/development.md](docs/development.md#driving-the-real-app-macos). Launch, interact and
-  capture in one shell call; stop the app with `kill -9`; run with a temporary `HOME`; don't
-  share screenshots that show the user's files.
+  capture in one shell call; stop the app with `kill -9`; run with a temporary `HOME`; post
+  events only while Gumka is the frontmost app; don't share screenshots that show the user's
+  files. To run it without models, build a copy of the sources outside the repository.
 - **Core ML costs disk space.** Each model compile, and each new path a model is loaded from,
   adds a 170–215 MB plan to `~/Library/Caches/<process>/com.apple.e5rt.e5bundlecache` that is
   never removed. Avoid real Core ML runs in tests, reuse cache folders, and never delete or

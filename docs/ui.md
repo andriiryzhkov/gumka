@@ -11,6 +11,42 @@
 - The title bar is the system's, except on Wayland desktops that leave it to apps (GNOME):
   there winit draws one in GNOME's Adwaita style (its `wayland-csd-adwaita` feature), close to
   GTK's but not following the theme or the button layout exactly.
+- Dialogs ("Save changes?", and messages such as a file that won't open) are windows of their
+  own, with the system's title bar and the app's style inside (`panels` in `app.rs`):
+  - egui deferred viewports, which repaint on their own rather than with the main window, one
+    per text (another message is another window), filled like a card and sized to their
+    content (laid out once unseen, with a point to spare for pixel rounding). Where a window's
+    scale lays the text out wider and it wraps onto more lines, the window grows to fit, so
+    nothing is cut off.
+  - A dialog's content area is centered on the main window's. The offset for its title bar is
+    the dialog window's own once one has told it (kept for later dialogs), the main window's
+    until then. On X11 and Windows a dialog that opens on a monitor of another scale moves into
+    place once its window exists. From then on it stays where it is: dragging it, or moving
+    the main window, doesn't pull it back.
+  - Until one is answered the main window is dimmed and takes no clicks, and clicking or
+    focusing it brings the dialog back to the front. Enter and Escape answer from either
+    window: both are OK in a message; in "Save changes?" Escape is Cancel and Enter does
+    nothing. Closing a dialog's window is Cancel, or OK for a message.
+  - On macOS the main window's zoom button (the green one) is off meanwhile, so the main
+    window can't go to a fullscreen Space without its dialog, or leave one with the dialog
+    behind it. A dialog opened while the main window is fullscreen shows in that Space.
+    Elsewhere maximizing leaves the dialog alone, and the button stays on.
+  - A window that can't be created logs an error; Enter and Escape in the main window still
+    answer its dialog.
+- On Wayland too a dialog is a window of its own, with the title bar winit draws, but there the
+  app can't bring it back to the front: winit's `focus_window` does nothing on Wayland, and
+  winit 0.30 sets no parent window, so the compositor doesn't keep the dialog above the main
+  window. If the main window is clicked and comes to the front, the dialog stays behind it
+  until it is picked with Alt+Tab or in the overview (decided October 2026: a real window's
+  title bar over drawing dialogs in the main window). Parent windows in winit and egui would
+  fix it.
+- A dialog's window asks for no minimize or maximize button and a fixed size. macOS and
+  Windows show only close. On X11 it is a dialog (`_NET_WM_WINDOW_TYPE_DIALOG`): the window
+  manager allows only moving and closing it, though GNOME's still draws a minimize button for
+  a dialog with no parent window. On Wayland winit draws the title bar with the buttons the
+  desktop's layout names (GNOME's setting `button-layout`) and takes no others: winit 0.30
+  doesn't implement enabled buttons there, and a fixed-size window's maximize button is drawn
+  but does nothing.
 - A model found complete reads "Included" on macOS, where models come with the app, and
   "Downloaded" elsewhere (`worker::FOUND`).
 - Every tool uses the same inspector, driven by the tool's declaration: name and input (mask,
