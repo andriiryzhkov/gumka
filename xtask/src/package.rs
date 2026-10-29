@@ -14,8 +14,96 @@ use gumka_infer::models;
 
 pub(crate) const NAME: &str = "Gumka";
 pub(crate) const IDENTIFIER: &str = "io.github.andriiryzhkov.gumka";
-pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
+
+/// Gumka's version, from git: the newest `release-X.Y.Z` tag at or before the commit (see
+/// docs/packaging.md). `Cargo.toml`'s version isn't the app's.
+pub(crate) struct Version {
+    /// `X.Y.Z` on a release tag, `X.Y.Z+N~gHASH` N commits after one, `0.0.0+…` before any.
+    pub full: String,
+    /// How many commits lead to this one: a build number that only grows from one build of
+    /// `main` to the next (macOS's `CFBundleVersion`, which picks the newest of several copies).
+    pub build: u32,
+}
+
+impl Version {
+    /// `X.Y.Z` alone, for what takes numbers only (macOS's `CFBundleShortVersionString`).
+    #[cfg(target_os = "macos")]
+    pub fn release(&self) -> &str {
+        self.full
+            .split_once('+')
+            .map_or(&self.full, |(release, _)| release)
+    }
+}
+
+pub(crate) fn version(root: &Path) -> Result<Version, String> {
+    // A source archive has no history to read a version from. Its own `.git` only: a checkout
+    // around it isn't Gumka's.
+    if !root.join(".git").exists() {
+        println!("  not a git checkout: the version is 0.0.0");
+        return Ok(Version {
+            full: "0.0.0".into(),
+            build: 0,
+        });
+    }
+    let git = |args: &[&str]| -> Result<String, String> {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .map_err(|e| format!("could not run git: {e}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        } else {
+            Err(format!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+        }
+    };
+    if git(&["rev-parse", "--is-shallow-repository"])? == "true" {
+        return Err(
+            "this clone is shallow, without the tags and history the version comes \
+                    from; fetch them with `git fetch --unshallow --tags`"
+                .into(),
+        );
+    }
+    let build = git(&["rev-list", "--count", "HEAD"])?
+        .parse()
+        .map_err(|e| format!("git's count of commits: {e}"))?;
+    // Tags such as release-notes aren't versions.
+    let full = match git(&["describe", "--tags", "--long", "--match", "release-[0-9]*"]) {
+        Ok(described) => version_from_describe(&described)?,
+        // No release yet, as if one were tagged before the first commit.
+        Err(_) => format!("0.0.0+{build}~g{}", git(&["rev-parse", "--short", "HEAD"])?),
+    };
+    Ok(Version { full, build })
+}
+
+/// The version from `git describe --tags --long`'s `release-X.Y.Z-N-gHASH`.
+fn version_from_describe(described: &str) -> Result<String, String> {
+    let mut fields = described.rsplitn(3, '-');
+    let (Some(hash), Some(commits), Some(tag)) = (fields.next(), fields.next(), fields.next())
+    else {
+        return Err(format!("can't read the version from {described:?}"));
+    };
+    let release = tag.strip_prefix("release-").unwrap_or(tag);
+    let numbers: Vec<&str> = release.split('.').collect();
+    if numbers.len() != 3
+        || !numbers
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(format!(
+            "the tag {tag} isn't release-X.Y.Z; delete it or tag the commit properly"
+        ));
+    }
+    Ok(match commits {
+        "0" => release.to_owned(),
+        _ => format!("{release}+{commits}~{hash}"),
+    })
+}
 
 pub(crate) fn step(what: &str) {
     println!("\n{what}");
@@ -95,6 +183,7 @@ pub(crate) fn render_png(svg: &[u8], pixels: u32, path: &Path) -> Result<(), Str
 /// the package put in `dir`.
 pub(crate) fn write_licenses(
     root: &Path,
+    app_version: &str,
     bundled: &[&models::ModelInfo],
     targets: &[&str],
     dir: &Path,
@@ -120,9 +209,9 @@ pub(crate) fn write_licenses(
             &model_notice(model, &text),
         )?;
     }
-    let crates = write_crate_licenses(root, targets, &dir.join("crates"))?;
+    let crates = write_crate_licenses(root, app_version, targets, &dir.join("crates"))?;
     let readme = format!(
-        "{NAME} {VERSION}\n\n\
+        "{NAME} {app_version}\n\n\
          {NAME} is free software: you can redistribute it and/or modify it under the terms of the\n\
          GNU General Public License as published by the Free Software Foundation, either version 3\n\
          of the License, or (at your option) any later version. See Gumka.txt.\n\n\
@@ -155,7 +244,12 @@ fn model_notice(model: &models::ModelInfo, text: &str) -> String {
 
 /// Copies the license files of every crate the app is built from (normal dependencies, not
 /// build tools or procedural macros) and lists them. Returns how many there are.
-fn write_crate_licenses(root: &Path, targets: &[&str], dir: &Path) -> Result<usize, String> {
+fn write_crate_licenses(
+    root: &Path,
+    app_version: &str,
+    targets: &[&str],
+    dir: &Path,
+) -> Result<usize, String> {
     // name version -> (license, repository)
     let mut crates = BTreeMap::new();
     for target in targets {
@@ -206,7 +300,7 @@ fn write_crate_licenses(root: &Path, targets: &[&str], dir: &Path) -> Result<usi
         .map(|e| e.path())
         .collect();
     let mut list = format!(
-        "The Rust crates compiled into {NAME} {VERSION}, with their licenses. Each one's license\n\
+        "The Rust crates compiled into {NAME} {app_version}, with their licenses. Each one's license\n\
          files, as published with it, are in the folder of the same name.\n\n"
     );
     let mut without = Vec::new();
@@ -387,6 +481,90 @@ pub(crate) fn size_of(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_comes_from_the_newest_release_tag() {
+        let version = |described| version_from_describe(described).unwrap();
+        assert_eq!(version("release-0.2.0-0-gabc1234"), "0.2.0", "on the tag");
+        assert_eq!(
+            version("release-0.2.0-12-gabc1234"),
+            "0.2.0+12~gabc1234",
+            "12 commits later"
+        );
+        assert_eq!(version("release-10.20.30-3-g0f"), "10.20.30+3~g0f");
+        for tag in [
+            "release-0.2-0-gabc1234",
+            "release-0.2.0.1-0-gabc1234",
+            "release-0.2.0-beta.1-0-gabc1234",
+            "release-v0.2.0-0-gabc1234",
+            "release-0..2-0-gabc1234",
+            "abc1234",
+        ] {
+            assert!(version_from_describe(tag).is_err(), "{tag}");
+        }
+    }
+
+    /// Runs git in `dir` with a fixed identity and no signing, whatever the user's settings.
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=Gumka",
+                "-c",
+                "user.email=gumka@example.invalid",
+            ])
+            .args(["-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn the_version_follows_the_repository() {
+        let dir = std::env::temp_dir().join(format!("gumka-version-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        create_dir(&repo).unwrap();
+        let read = |dir: &Path| {
+            let v = version(dir).unwrap();
+            (v.full, v.build)
+        };
+
+        assert_eq!(read(&repo), ("0.0.0".into(), 0), "a source archive");
+        git_in(&repo, &["init", "-q"]);
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let hash = git_in(&repo, &["rev-parse", "--short", "HEAD"]);
+        assert_eq!(
+            read(&repo),
+            (format!("0.0.0+1~g{hash}"), 1),
+            "no release yet"
+        );
+
+        git_in(&repo, &["tag", "release-0.1.0"]);
+        git_in(&repo, &["tag", "release-notes"]);
+        assert_eq!(
+            read(&repo),
+            ("0.1.0".into(), 1),
+            "a tag that's no version is ignored"
+        );
+        git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let hash = git_in(&repo, &["rev-parse", "--short", "HEAD"]);
+        assert_eq!(read(&repo), (format!("0.1.0+1~g{hash}"), 2));
+
+        let shallow = dir.join("shallow");
+        let url = format!("file://{}", repo.display());
+        git_in(&dir, &["clone", "-q", "--depth", "1", &url, "shallow"]);
+        let refused = version(&shallow).err().unwrap_or_default();
+        assert!(refused.contains("shallow"), "{refused}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_model_notice_carries_its_copyright_before_the_license() {

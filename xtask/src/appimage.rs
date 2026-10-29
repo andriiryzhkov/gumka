@@ -25,11 +25,14 @@ use std::time::Instant;
 use gumka_infer::models::{self, ModelFile};
 
 use crate::package::{
-    IDENTIFIER, NAME, REPOSITORY, VERSION, check_models, copy, create_dir, read, render_png,
-    repository, run_command, size_of, step, target_dir, write, write_licenses,
+    IDENTIFIER, NAME, REPOSITORY, check_models, copy, create_dir, read, render_png, repository,
+    run_command, size_of, step, target_dir, version, write, write_licenses,
 };
 
 const USAGE: &str = "usage: cargo xtask bundle [--nightly] [--no-appimage]";
+
+/// The nightly AppImage's name in place of a version: the same from one build to the next.
+const NIGHTLY: &str = "nightly";
 
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 
@@ -84,6 +87,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let out = target_dir(&root).join("bundle");
     let downloads = out.join("downloads");
     let started = Instant::now();
+    let version = version(&root)?;
+    println!("{NAME} {} (build {})", version.full, version.build);
 
     step("checking the models");
     let models_dir = models::repository_dir();
@@ -116,7 +121,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     )?;
     let desktop = share.join(format!("applications/{IDENTIFIER}.desktop"));
     create_dir(desktop.parent().unwrap_or(&share))?;
-    write(&desktop, &desktop_entry())?;
+    write(&desktop, &desktop_entry(&version.full))?;
     run_command(Command::new("desktop-file-validate").arg(&desktop))?;
     make_icons(&root, &share.join("icons/hicolor"))?;
     copy_models(&models_dir, &bundled, &share.join("gumka/models"))?;
@@ -127,7 +132,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
          - appimage-runtime/: the AppImage runtime and the libraries built into it, with their \
          licenses\n"
     );
-    write_licenses(&root, &bundled, &[TARGET], &licenses, &more)?;
+    write_licenses(&root, &version.full, &bundled, &[TARGET], &licenses, &more)?;
     create_dir(&licenses.join("onnxruntime"))?;
     for file in ["LICENSE", "ThirdPartyNotices.txt"] {
         copy(
@@ -156,7 +161,11 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     println!("  {} ({})", app_dir.display(), size_of(&app_dir));
 
     if appimage {
-        let image = out.join(image_name(nightly));
+        let image = out.join(image_name(if nightly {
+            NIGHTLY
+        } else {
+            version.full.as_str()
+        }));
         step(&format!("making {}", image.display()));
         let update_info = update_info(nightly)?;
         make_appimage(&app_dir, &runtime, &update_info, &image)?;
@@ -234,7 +243,7 @@ fn newest_glibc(symbols: &str) -> Option<(u32, u32)> {
 
 /// The desktop entry: Gumka in the applications menu, and offered under Open With for the
 /// files it opens, but never their default app (that is the desktop's choice).
-fn desktop_entry() -> String {
+fn desktop_entry(version: &str) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -247,7 +256,7 @@ fn desktop_entry() -> String {
          Categories=Graphics;2DGraphics;RasterGraphics;Photography;\n\
          MimeType=image/tiff;image/png;image/jpeg;\n\
          StartupWMClass={IDENTIFIER}\n\
-         X-AppImage-Version={VERSION}\n"
+         X-AppImage-Version={version}\n"
     )
 }
 
@@ -300,10 +309,8 @@ fn link(target: &str, path: &Path) -> Result<(), String> {
     symlink(target, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The AppImage's file name: with the version, or `nightly` for the rolling nightly build,
-/// whose name stays the same from one build to the next.
-fn image_name(nightly: bool) -> String {
-    let label = if nightly { "nightly" } else { VERSION };
+/// The AppImage's file name: with the version, or [`NIGHTLY`] for the rolling nightly build.
+fn image_name(label: &str) -> String {
     format!("{NAME}-{label}-x86_64.AppImage")
 }
 
@@ -319,7 +326,7 @@ fn update_info(nightly: bool) -> Result<String, String> {
             format!("{REPOSITORY} isn't a GitHub repository, where updates are found")
         })?;
     let (tag, file) = if nightly {
-        ("latest-pre", image_name(true))
+        ("latest-pre", image_name(NIGHTLY))
     } else {
         ("latest", format!("{NAME}-*-x86_64.AppImage"))
     };
@@ -441,11 +448,8 @@ mod tests {
             update_info(true).unwrap(),
             "gh-releases-zsync|andriiryzhkov|gumka|latest-pre|Gumka-nightly-x86_64.AppImage.zsync"
         );
-        assert_eq!(image_name(true), "Gumka-nightly-x86_64.AppImage");
-        assert_eq!(
-            image_name(false),
-            format!("Gumka-{VERSION}-x86_64.AppImage")
-        );
+        assert_eq!(image_name(NIGHTLY), "Gumka-nightly-x86_64.AppImage");
+        assert_eq!(image_name("0.2.0"), "Gumka-0.2.0-x86_64.AppImage");
     }
 
     /// A minimal 64-bit ELF file: the null section, `.upd_info` of 16 bytes (filled with 0xee,
@@ -531,9 +535,10 @@ mod tests {
     /// window with its icon, and offers Gumka for the files it opens.
     #[test]
     fn the_desktop_entry_matches_the_window() {
-        let entry = desktop_entry();
+        let entry = desktop_entry("0.2.0+12~gabc1234");
         assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
         for line in [
+            "X-AppImage-Version=0.2.0+12~gabc1234",
             "Exec=gumka %F",
             "Icon=io.github.andriiryzhkov.gumka",
             "StartupWMClass=io.github.andriiryzhkov.gumka",

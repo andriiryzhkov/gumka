@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "gumka-app"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -1472,7 +1472,7 @@ dependencies = [
 
 [[package]]
 name = "gumka-cli"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "gumka-core",
  "gumka-infer",
@@ -1480,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "gumka-core"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "fast_image_resize",
  "image",
@@ -1491,7 +1491,7 @@ dependencies = [
 
 [[package]]
 name = "gumka-infer"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "block2 0.6.2",
  "directories",
@@ -4542,7 +4542,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "gumka-infer",
  "png 0.18.1",
