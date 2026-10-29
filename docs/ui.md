@@ -7,7 +7,10 @@
 - Layout: title bar; toolbar with file actions, cursor tools (brush, remove from mask, select
   object), undo/redo, before/after, zoom, and "Save & Return" for a photo another app sent
   ([opening-and-saving.md](opening-and-saving.md#save--return)); left tool rail (Erase,
-  Upscale; Extend later); viewer; right inspector; status bar.
+  Upscale; Extend later), with Config at its bottom; viewer; right inspector; status bar.
+- The Config page, in place of the viewer and inspector: Gumka's version at the top
+  (selectable, for bug reports), then the models and where they run. Esc or its rail button
+  goes back to the editor.
 - The title bar is the system's, except on Wayland desktops that leave it to apps (GNOME):
   there winit draws one in GNOME's Adwaita style (its `wayland-csd-adwaita` feature), close to
   GTK's but not following the theme or the button layout exactly.
@@ -85,9 +88,9 @@
     until then. No Cancel button appears, so nothing in the inspector moves.
   - The status bar shows the progress from any tool.
 - Neutral dark grays and a mid-gray viewer. One amber accent (#F2A541), only for the primary
-  action (the inspector's, and Save & Return in the toolbar for a sent photo) and the active
-  tool: switches, links, selected buttons and the Models page's rail icon
-  use neutral colors. A badge shows whenever the API is in use.
+  action (the inspector's, and Save & Return in the toolbar for a sent photo) and the selected
+  rail button (the active tool, or the open Config page): switches, links and selected
+  buttons elsewhere use neutral colors. A badge shows whenever the API is in use.
 - IBM Plex Sans / Mono (OFL), embedded in the app (`crates/gumka-app/assets/fonts`). Colors and
   styles are in `gumka-app/src/theme.rs`.
 - Keyboard: egui's own keyboard UI zoom is off; ⌘+ / ⌘= / ⌘− / ⌘0 / ⌘1 zoom the photo.

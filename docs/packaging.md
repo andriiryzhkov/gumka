@@ -155,7 +155,8 @@ in the repository's settings unless an organization policy limits what workflows
 ## Versions and releases
 
 Gumka's version is `X.Y.Z`, and it comes from git tags, never from a file: `version` in
-`Cargo.toml` stays `0.0.0` and isn't Gumka's. `cargo xtask bundle` reads it with
+`Cargo.toml` stays `0.0.0` and isn't Gumka's. `crates/gumka-version` reads it, for
+`cargo xtask bundle` and for the app's build script, with
 `git describe --tags --long --match 'release-[0-9]*'` (so a tag such as `release-notes` isn't
 one):
 
@@ -164,17 +165,31 @@ one):
 | tagged `release-0.2.0` | `0.2.0` |
 | 12 commits after that tag | `0.2.0+12~gabc1234`: the commits since, and the commit |
 | before the first release tag | `0.0.0+<all commits>~g<commit>` |
-| a source archive, without `.git` | `0.0.0` |
+| a source archive, without `.git` | `0.0.0` (`cargo xtask bundle` says why) |
 
 The version names the disk image and the AppImage (a nightly's names say `nightly` instead), and
-goes into the AppImage's desktop entry (`X-AppImage-Version`) and the licenses' README. macOS's
-`Info.plist` takes numbers only: `CFBundleShortVersionString` is `X.Y.Z`, and `CFBundleVersion`
-is the number of commits up to the one built, which only grows. With several copies installed
-(a release and a nightly), macOS opens the one with the highest `CFBundleVersion` when a photo
-editor asks for Gumka. A shallow clone has no tags, so `cargo xtask bundle` refuses one: the
-nightly and release jobs check out the whole history (`fetch-depth: 0`), though not its old
-files (`filter: blob:none`). The rolling `nightly` tag isn't a release tag, so versions ignore
+goes into the AppImage's desktop entry (`X-AppImage-Version`) and the licenses' README.
+
+The app shows it at the top of its Config page, whichever way it is built (`cargo run` too):
+its build script (`crates/gumka-app/build.rs`) reads it from git the same way, again whenever
+the commit, the checked-out branch or a tag changes, or a shallow clone gets its history (other
+branches and fetches don't rebuild the app); `cargo xtask bundle` doesn't hand it its version,
+as both read the same checkout. A packager can set `GUMKA_VERSION` instead (for a build from a
+source archive, say), and git isn't read then; an empty value counts as unset.
+`cargo xtask bundle` builds the app without it, so the app always says what the package's
+names and `Info.plist` say. A build never fails over its version: where git can't give it (a
+shallow clone, git missing or failing), Cargo warns why and the app shows `0.0.0` until the
+next commit, checkout or tag; `cargo xtask bundle` refuses to package instead. A release tag
+that `git describe` can't read is an error, never `0.0.0`. Uncommitted changes don't show in
 it.
+
+macOS's `Info.plist` takes numbers only: `CFBundleShortVersionString` is `X.Y.Z`, and
+`CFBundleVersion` is the number of commits up to the one built, which only grows. With several
+copies installed (a release and a nightly), macOS opens the one with the highest
+`CFBundleVersion` when a photo editor asks for Gumka. A shallow clone has no tags, so
+`cargo xtask bundle` refuses one: the nightly and release jobs check out the whole history
+(`fetch-depth: 0`), though not its old files (`filter: blob:none`). The rolling `nightly` tag
+isn't a release tag, so versions ignore it.
 
 Releases only move forward: each one is tagged on `main` with a higher version than the last,
 so it is always the newest build there is. That keeps it GitHub's latest release (where release

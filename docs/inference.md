@@ -66,7 +66,7 @@ testing.
   restart Gumka (the failure is kept: the app loads its models once). A library that is there
   but doesn't open (a library it needs is missing, say) gives dlopen's reason instead. The
   upscalers, which load when first used, are checked against ONNX Runtime at startup too, and
-  the Models page's card says when it is missing. `unsafe` stays in `ort`;
+  the Config page's card says when it is missing. `unsafe` stays in `ort`;
   `gumka-infer/src/onnx` has none.
 - Built for API 17, so ONNX Runtime 1.17 or later. The library is looked for as
   `$ORT_DYLIB_PATH` alone, if set; else the package's (`<prefix>/lib/libonnxruntime.so.1` for

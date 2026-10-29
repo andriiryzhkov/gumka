@@ -156,7 +156,7 @@ struct Selection {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Editor,
-    Models,
+    Config,
 }
 
 /// Which inspector sections are open.
@@ -223,8 +223,8 @@ pub struct GumkaApp {
     settings: EraseSettings,
     sections: Sections,
     page: Page,
-    /// Filled when the Models page opens.
-    model_rows: Vec<crate::models_page::ModelRow>,
+    /// Filled when the Config page opens.
+    model_rows: Vec<crate::config_page::ModelRow>,
     /// The file from the command line, opened on the first frame: only then does egui know
     /// how large a texture the GPU takes, which the canvas needs.
     startup: Option<PathBuf>,
@@ -343,9 +343,9 @@ impl GumkaApp {
         }
     }
 
-    fn show_models(&mut self) {
-        self.model_rows = crate::models_page::load_rows();
-        self.page = Page::Models;
+    fn show_config(&mut self) {
+        self.model_rows = crate::config_page::load_rows();
+        self.page = Page::Config;
     }
 
     fn open(&mut self, ctx: &egui::Context, path: PathBuf) {
@@ -832,7 +832,7 @@ impl GumkaApp {
         if pressed(&UNDO) && !stroking {
             self.undo_redo(true);
         }
-        if self.page == Page::Models {
+        if self.page == Page::Config {
             if pressed(&CLEAR_MASK) {
                 self.page = Page::Editor;
             }
@@ -1171,32 +1171,29 @@ impl GumkaApp {
                 let info = tool.info();
                 let tooltip = format!("{} ({})", info.name, ctx.format_shortcut(&info.shortcut));
                 let selected = self.page == Page::Editor && self.tool == tool;
-                if widgets::rail_button(ui, info.icon, info.name, &tooltip, selected, ACCENT)
-                    .clicked()
-                {
+                if widgets::rail_button(ui, info.icon, info.name, &tooltip, selected).clicked() {
                     self.tool = tool;
                     self.page = Page::Editor;
                 }
             }
         });
-        // Models sits at the bottom of the rail.
+        // Config sits at the bottom of the rail.
         let rail = ui.max_rect();
         let spot = Rect::from_center_size(
             pos2(rail.center().x, rail.bottom() - 29.0),
             vec2(64.0, 58.0),
         );
-        let selected = self.page == Page::Models;
+        let selected = self.page == Page::Config;
         let clicked = ui
             .scope_builder(egui::UiBuilder::new().max_rect(spot), |ui| {
-                widgets::rail_button(ui, icons::MODELS, "Models", "Models", selected, TEXT_STRONG)
-                    .clicked()
+                widgets::rail_button(ui, icons::CONFIG, "Config", "Config", selected).clicked()
             })
             .inner;
         if clicked {
             if selected {
                 self.page = Page::Editor;
             } else {
-                self.show_models();
+                self.show_config();
             }
         }
     }
@@ -1937,7 +1934,7 @@ impl GumkaApp {
             }
         });
         if manage {
-            self.show_models();
+            self.show_config();
         }
     }
 
@@ -2117,11 +2114,11 @@ impl eframe::App for GumkaApp {
                 .frame(Frame::NONE.fill(BG_PANEL))
                 .show(ui, |ui| self.inspector(ui));
         }
-        if self.page == Page::Models {
+        if self.page == Page::Config {
             egui::CentralPanel::default()
                 .frame(Frame::NONE.fill(BG_PANEL))
                 .show(ui, |ui| {
-                    crate::models_page::show(ui, &self.model_rows, &|info| match info.id.as_str() {
+                    crate::config_page::show(ui, &self.model_rows, &|info| match info.id.as_str() {
                         gumka_infer::models::LAMA => Some(&self.model),
                         gumka_infer::models::SAM => Some(&self.sam),
                         id => UPSCALERS
@@ -2843,7 +2840,29 @@ mod tests {
         }
 
         /// Runs one frame, as eframe does: `logic`, then `ui`. Returns the window commands.
-        fn frame_with(&mut self, mut input: RawInput) -> Vec<ViewportCommand> {
+        fn frame_with(&mut self, input: RawInput) -> Vec<ViewportCommand> {
+            self.run(input, |output| {
+                output
+                    .viewport_output
+                    .remove(&ViewportId::ROOT)
+                    .map(|v| v.commands)
+                    .unwrap_or_default()
+            })
+        }
+
+        /// Runs one frame as [`Self::frame_with`] does. Returns the painted shapes.
+        fn shapes(&mut self, input: RawInput) -> Vec<egui::Shape> {
+            self.run(input, |output| {
+                output.shapes.iter().map(|s| s.shape.clone()).collect()
+            })
+        }
+
+        /// Runs one frame in a 1280 x 860 window and returns what `take` takes from its output.
+        fn run<T>(
+            &mut self,
+            mut input: RawInput,
+            take: impl FnOnce(&mut egui::FullOutput) -> T,
+        ) -> T {
             self.time += 1.0 / 60.0;
             input.time = Some(self.time);
             input.screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 860.0)));
@@ -2854,13 +2873,9 @@ mod tests {
                 app.logic(ui.ctx(), &mut frame);
                 app.ui(ui, &mut frame);
             });
-            let commands = output
-                .viewport_output
-                .remove(&ViewportId::ROOT)
-                .map(|v| v.commands)
-                .unwrap_or_default();
+            let taken = take(&mut output);
             output.drop_without_applying_deltas();
-            commands
+            taken
         }
 
         fn frame(&mut self, events: Vec<Event>) -> Vec<ViewportCommand> {
@@ -3834,16 +3849,8 @@ mod tests {
         }
         let mut h = Harness::new("links");
         h.frame(vec![]);
-        let mut frame = eframe::Frame::_new_kittest();
-        let app = &mut h.app;
-        let output = h.ctx.run_ui(RawInput::default(), |ui| {
-            app.logic(ui.ctx(), &mut frame);
-            app.ui(ui, &mut frame);
-        });
-        let shapes: Vec<egui::Shape> = output.shapes.iter().map(|s| s.shape.clone()).collect();
-        output.drop_without_applying_deltas();
         let mut all = Vec::new();
-        texts(&shapes, &mut all);
+        texts(&h.shapes(RawInput::default()), &mut all);
         let link = all
             .iter()
             .find(|t| t.galley.job.text.contains("Manage models"))
@@ -3852,6 +3859,43 @@ mod tests {
             assert!(section.format.underline.width > 0.0, "underlined");
             assert_ne!(section.format.color, ACCENT);
         }
+    }
+
+    /// The Config page starts with Gumka's version, then lists the models as before.
+    #[test]
+    fn the_config_page_shows_the_version() {
+        let mut h = Harness::new("config");
+        let version = format!("Gumka {}", crate::config_page::VERSION);
+        h.frame(vec![]);
+        assert!(!shows(&mut h, RawInput::default(), &version));
+        h.app.show_config();
+        assert!(h.app.page == Page::Config);
+        assert!(shows(&mut h, RawInput::default(), &version));
+        assert!(shows(&mut h, RawInput::default(), "Where models run"));
+    }
+
+    /// With the Config page open, its rail button is lit in the accent, as a tool's is in the
+    /// editor (no tool is selected meanwhile).
+    #[test]
+    fn the_config_button_is_in_the_accent_while_its_page_is_open() {
+        /// The colors painted in the rail; an icon is a rectangle filled with its tint.
+        fn rail_colors(shapes: &[egui::Shape], out: &mut Vec<Color32>) {
+            for shape in shapes {
+                match shape {
+                    egui::Shape::Rect(rect) if rect.rect.max.x <= 76.0 => out.push(rect.fill),
+                    egui::Shape::Vec(shapes) => rail_colors(shapes, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut h = Harness::new("config-accent");
+        h.app.show_config();
+        // The icons are drawn once their SVGs have loaded.
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let mut colors = Vec::new();
+        rail_colors(&h.shapes(RawInput::default()), &mut colors);
+        assert!(colors.contains(&ACCENT));
     }
 
     /// Bug 1: a Save As picked while the worker has the pixels is dropped by a later request.
@@ -4004,7 +4048,7 @@ mod tests {
     }
 
     /// Whether `text` is drawn in a frame with `input` (a 1280 x 860 window).
-    fn shows(h: &mut Harness, mut input: RawInput, text: &str) -> bool {
+    fn shows(h: &mut Harness, input: RawInput, text: &str) -> bool {
         fn has(shape: &egui::Shape, text: &str) -> bool {
             match shape {
                 egui::Shape::Text(t) => t.galley.job.text.contains(text),
@@ -4012,18 +4056,7 @@ mod tests {
                 _ => false,
             }
         }
-        h.time += 1.0 / 60.0;
-        input.time = Some(h.time);
-        input.screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 860.0)));
-        let mut frame = eframe::Frame::_new_kittest();
-        let app = &mut h.app;
-        let output = h.ctx.run_ui(input, |ui| {
-            app.logic(ui.ctx(), &mut frame);
-            app.ui(ui, &mut frame);
-        });
-        let found = output.shapes.iter().any(|s| has(&s.shape, text));
-        output.drop_without_applying_deltas();
-        found
+        h.shapes(input).iter().any(|s| has(s, text))
     }
 
     /// AppKit can give up on a drag while the app is busy without saying so; the overlay then

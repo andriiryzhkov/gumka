@@ -14,8 +14,9 @@ workspace = true
 gumka-infer = { path = "../crates/gumka-infer" }
 sha2 = "0.11.1"
 
-# `cargo xtask bundle`: the app icon, and the licenses of what goes in the package.
+# `cargo xtask bundle`: the version, the app icon, and the licenses of what goes in the package.
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+gumka-version = { path = "../crates/gumka-version" }
 png = "0.18.1"
 resvg = { version = "0.45.1", default-features = false }
 toml = { version = "0.9.8", default-features = false, features = ["parse", "serde"] }

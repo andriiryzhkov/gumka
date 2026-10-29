@@ -17,10 +17,11 @@ use std::process::Command;
 use std::time::Instant;
 
 use gumka_infer::{coreml, models};
+use gumka_version::Version;
 
 use crate::package::{
-    IDENTIFIER, NAME, Version, check_models, copy, create_dir, read, render_png, repository,
-    run_command, size_of, step, target_dir, version, write, write_licenses,
+    IDENTIFIER, NAME, check_models, copy, create_dir, read, render_png, repository, run_command,
+    size_of, step, target_dir, version, write, write_licenses,
 };
 
 const USAGE: &str = "usage: cargo xtask bundle [--universal] [--no-dmg]";
@@ -106,7 +107,9 @@ fn build(root: &Path, universal: bool) -> Result<(PathBuf, &'static str), String
         let mut command = Command::new(&cargo);
         command
             .current_dir(root)
-            .args(["build", "--release", "-p", "gumka-app"]);
+            .args(["build", "--release", "-p", "gumka-app"])
+            // The app reads its version from git, as xtask did, so the two agree.
+            .env_remove("GUMKA_VERSION");
         let exe = match triple {
             Some(triple) => {
                 command.args(["--target", triple]);

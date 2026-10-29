@@ -4,12 +4,12 @@
 
 mod app;
 mod canvas;
+mod config_page;
 #[cfg(target_os = "macos")]
 mod delegate;
 mod display;
 mod document;
 mod icons;
-mod models_page;
 mod open_files;
 mod quit;
 mod theme;

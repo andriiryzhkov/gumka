@@ -10,12 +10,12 @@ cargo xtask models           # download what is missing into models/ and check e
 cargo xtask models --check   # only check
 ```
 
-The app builds the registry in (`gumka_infer::models::registry()`) for the Models page and to
+The app builds the registry in (`gumka_infer::models::registry()`) for the Config page and to
 find packages ([development.md](development.md#models) has the search folders). Adding a model is
 an entry in `models.toml`, plus code only if it needs a new adapter.
 
 Each entry names its `platform`: `macos` for Core ML, `linux` for ONNX. An id has at most one
-entry per platform; the app asks for this platform's (`models::model`), and the Models page and
+entry per platform; the app asks for this platform's (`models::model`), and the Config page and
 `cargo xtask models` list only this platform's (`--all` downloads every one). An entry with a
 `dir` keeps its files in that folder of a models directory (the ONNX models, whose file names
 are generic); its `packages` and file paths are relative to it. An ONNX package's weights may sit
@@ -29,7 +29,7 @@ beside it as `<package>_data`.
   `cargo xtask bundle` compiles them to `.mlmodelc` from checked downloads for the macOS app,
   and puts the ONNX files in the AppImage as downloaded ([packaging.md](packaging.md)). The app works offline from its first launch, and its contents
   are what was tested. Small models are bundled; the upscalers are 15 MB each.
-- Optional and large models (a second erase model; planned): downloaded only when the user asks, from the Models page, into `~/Library/Application Support/Gumka/models`, verified
+- Optional and large models (a second erase model; planned): downloaded only when the user asks, from the Config page, into `~/Library/Application Support/Gumka/models`, verified
   against `models.toml` (size and SHA-256), never in the background; they survive app updates.
   Keep the bundle under about 500 MB. Multi-gigabyte generative models (Fill, Extend) use the
   API, or an optional download with a clear disk-space warning.

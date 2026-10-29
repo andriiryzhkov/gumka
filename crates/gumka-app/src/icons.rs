@@ -58,9 +58,10 @@ icon!(
     SELECT,
     "M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8l1.4 1.4M17.8 6.2l1.4-1.4M12.2 6.2l-1.4-1.4M3 21l9-9"
 );
+// Two sliders, for the Config page.
 icon!(
-    MODELS,
-    "M7 7h10v10H7zM10 10h4v4h-4zM9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"
+    CONFIG,
+    "M4 7h9M17 7h3M13 7a2 2 0 1 0 4 0a2 2 0 1 0-4 0M4 17h3M11 17h9M7 17a2 2 0 1 0 4 0a2 2 0 1 0-4 0"
 );
 icon!(COMPARE, "M4 5h16v14H4zM12 5v14");
 icon!(CHEVRON_DOWN, "M6 9l6 6 6-6");

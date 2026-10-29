@@ -28,6 +28,7 @@ Current status and scope: [docs/overview.md](docs/overview.md).
 | `crates/gumka-core` | Pictures, TIFF/PNG/JPEG I/O and metadata, color, erase, select and upscale pipelines. No UI, no ML. |
 | `crates/gumka-infer` | Model registry and the backends: Core ML (macOS), ONNX Runtime (Linux) for LaMa, SAM, RealPLKSR. |
 | `crates/gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
+| `crates/gumka-version` | Gumka's version, read from the `release-X.Y.Z` git tags, for xtask and the app's build script. |
 | `crates/gumka-app` | The egui app (binary `gumka`). |
 | `xtask` | `cargo xtask models` (download and verify the models), `cargo xtask bundle` (the macOS app, or the Linux AppImage). |
 | `models.toml` | The model registry: pinned URLs, sizes, SHA-256, licenses. |
@@ -105,8 +106,9 @@ and Windows from a Mac needs a dummy Little CMS library; see
   platforms, so every target builds.
 - User-facing messages are short and specific ("<name> is read-only"), and say what the user can
   do instead.
-- UI: neutral grays; the amber accent only for the primary action and the active tool. Colors
-  and styles live in `gumka-app/src/theme.rs` ([docs/ui.md](docs/ui.md)).
+- UI: neutral grays; the amber accent only for the primary action and the selected rail button
+  (the active tool, or the open Config page). Colors and styles live in
+  `gumka-app/src/theme.rs` ([docs/ui.md](docs/ui.md)).
 - The app never names other products or trademarks (no "Capture One", "Lightroom"): it speaks of
   "your photo editor" or "your RAW editor".
 - egui is 0.37: apps implement `App::ui` and `App::logic`; panels are

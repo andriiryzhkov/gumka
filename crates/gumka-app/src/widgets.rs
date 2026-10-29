@@ -50,15 +50,14 @@ pub fn icon_button(
     response.on_hover_text(tooltip)
 }
 
-/// A button in the left rail: icon over a short label. `tint` colors the icon while it is
-/// selected: the accent for the active tool, a neutral for a page such as Models.
+/// A button in the left rail: icon over a short label, the icon in the accent while it is
+/// selected (the active tool, or the open Config page).
 pub fn rail_button(
     ui: &mut Ui,
     icon: Icon,
     label: &str,
     tooltip: &str,
     selected: bool,
-    tint: Color32,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(64.0, 58.0), Sense::click());
     response.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, label));
@@ -77,7 +76,7 @@ pub fn rail_button(
         ui,
         icon_rect,
         if selected {
-            tint
+            ACCENT
         } else {
             Color32::from_gray(0xc8)
         },
@@ -562,15 +561,15 @@ mod tests {
         }
     }
 
-    /// The colors a selected rail button paints with `tint`, once its icon has loaded.
-    fn selected_rail_button(tint: Color32) -> Vec<Color32> {
+    /// The colors a rail button paints, once its icon has loaded.
+    fn rail_button_colors(selected: bool) -> Vec<Color32> {
         let ctx = egui::Context::default();
         apply(&ctx);
         egui_extras::install_image_loaders(&ctx);
         let mut out = Vec::new();
         for _ in 0..3 {
             let output = ctx.run_ui(RawInput::default(), |ui| {
-                rail_button(ui, icons::MODELS, "Models", "Models", true, tint);
+                rail_button(ui, icons::CONFIG, "Config", "Config", selected);
             });
             let shapes: Vec<Shape> = output.shapes.iter().map(|s| s.shape.clone()).collect();
             output.drop_without_applying_deltas();
@@ -580,16 +579,9 @@ mod tests {
         out
     }
 
-    /// The Models page is not a tool: its rail button is neutral when selected.
     #[test]
-    fn a_selected_rail_button_takes_its_tint() {
-        let tool = selected_rail_button(ACCENT);
-        assert!(
-            tool.contains(&ACCENT),
-            "the icon is drawn, in the accent for a tool"
-        );
-        let page = selected_rail_button(TEXT_STRONG);
-        assert!(page.contains(&TEXT_STRONG));
-        assert!(!page.contains(&ACCENT));
+    fn a_selected_rail_button_has_its_icon_in_the_accent() {
+        assert!(rail_button_colors(true).contains(&ACCENT));
+        assert!(!rail_button_colors(false).contains(&ACCENT));
     }
 }

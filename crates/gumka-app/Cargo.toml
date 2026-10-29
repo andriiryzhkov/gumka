@@ -25,6 +25,10 @@ rfd = "0.17.2"
 # (winit uses it only on Wayland).
 winit = { version = "0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 
+# The version, read from git by build.rs.
+[build-dependencies]
+gumka-version = { path = "../gumka-version" }
+
 # Tagging the window's Metal layer with its color space (see display.rs), and asking about
 # unsaved changes on Quit (see quit.rs).
 [target.'cfg(target_os = "macos")'.dependencies]
