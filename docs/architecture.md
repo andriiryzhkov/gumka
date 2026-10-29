@@ -17,6 +17,7 @@
 | `gumka-core` | Pictures, file formats and metadata, color conversion, the erase, select and upscale pipelines. No UI, no ML. |
 | `gumka-infer` | The model registry and the backends: Core ML on macOS, ONNX Runtime on Linux (`Inpainter`, `Segmenter` and `Upscaler` implementations). |
 | `gumka-cli` | `gumka-cli erase`, `select` and `upscale`. |
+| `gumka-version` | Gumka's version from the `release-X.Y.Z` git tags ([packaging.md](packaging.md#versions-and-releases)): read by `cargo xtask bundle`, and by the app's `build.rs`, which shows it on the Config page. |
 | `gumka-app` | The egui app (binary `gumka`). |
 | `xtask` | `cargo xtask models` downloads and checks the models in `models.toml`; `cargo xtask bundle` builds the macOS app (`bundle.rs`) or the Linux AppImage (`appimage.rs`), with what both need in `package.rs` ([packaging.md](packaging.md)). |
 
@@ -60,7 +61,7 @@ it is used, cfg-gated with no-op stand-ins elsewhere.
 - `canvas.rs`: the preview pyramid, view transform and brush painting. `document.rs`: the open
   document and its history (undo stores only changed regions, or the whole picture for a
   change of size).
-- `worker.rs`: the inference thread. `models_page.rs`: the Models page.
+- `worker.rs`: the inference thread. `config_page.rs`: the Config page (the version, the models).
 - `display.rs`: tags the window's Metal layer Display P3 ([color.md](color.md)). `quit.rs`:
   routes macOS quits through "Save changes?"; `open_files.rs`: takes files other apps send
   ([opening-and-saving.md](opening-and-saving.md)). Both add methods to winit's app delegate

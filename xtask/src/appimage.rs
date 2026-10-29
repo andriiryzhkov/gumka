@@ -213,12 +213,13 @@ fn unpack_onnx_runtime(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
 
 fn build(root: &Path) -> Result<PathBuf, String> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    run_command(Command::new(cargo).current_dir(root).args([
-        "build",
-        "--release",
-        "-p",
-        "gumka-app",
-    ]))?;
+    run_command(
+        Command::new(cargo)
+            .current_dir(root)
+            .args(["build", "--release", "-p", "gumka-app"])
+            // The app reads its version from git, as xtask did, so the two agree.
+            .env_remove("GUMKA_VERSION"),
+    )?;
     Ok(target_dir(root).join("release/gumka"))
 }
 

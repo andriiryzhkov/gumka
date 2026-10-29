@@ -1458,6 +1458,7 @@ dependencies = [
  "egui_extras",
  "gumka-core",
  "gumka-infer",
+ "gumka-version",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -1507,6 +1508,10 @@ dependencies = [
  "serde",
  "toml",
 ]
+
+[[package]]
+name = "gumka-version"
+version = "0.0.0"
 
 [[package]]
 name = "half"
@@ -4545,6 +4550,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "gumka-infer",
+ "gumka-version",
  "png 0.18.1",
  "resvg",
  "sha2",

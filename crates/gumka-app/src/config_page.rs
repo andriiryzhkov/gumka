@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The Models page: every model Gumka uses, with its license and source, where it runs, where
-//! its files are and whether it is ready; then the places models can run.
+//! The Config page: Gumka's version; then every model Gumka uses, with its license and source,
+//! where it runs, where its files are and whether it is ready; then the places models can run.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +14,9 @@ use gumka_infer::models::{self, ModelInfo};
 use crate::theme::*;
 use crate::widgets;
 use crate::worker::{BACKEND, FOUND, Status, THIS_COMPUTER, runtime_problem};
+
+/// Gumka's version, from build.rs (see docs/packaging.md).
+pub const VERSION: &str = env!("GUMKA_VERSION");
 
 /// A catalog entry with what was found on disk.
 pub struct ModelRow {
@@ -68,6 +71,21 @@ pub fn show<'a>(ui: &mut Ui, rows: &[ModelRow], status: &dyn Fn(&ModelInfo) -> O
                 ui.vertical(|ui| {
                     ui.set_width(width);
                     ui.spacing_mut().item_spacing.y = 8.0;
+                    ui.label(
+                        RichText::new("Version")
+                            .font(FontId::new(20.0, semibold()))
+                            .color(TEXT),
+                    );
+                    // Selectable, to copy into a bug report.
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Gumka {VERSION}"))
+                                .size(13.0)
+                                .color(TEXT),
+                        )
+                        .selectable(true),
+                    );
+                    ui.add_space(28.0);
                     ui.label(
                         RichText::new("Models")
                             .font(FontId::new(20.0, semibold()))

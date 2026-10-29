@@ -23,7 +23,8 @@ Working:
 - Upscale, 1.25× to 4× (2× and 4× are the models' own output), with RealPLKSR (Core ML, our own
   conversion): in place and undoable, run in tiles on the worker thread with progress and
   Cancel ([upscale-pipeline.md](upscale-pipeline.md)).
-- The Models page, built from `models.toml` via `gumka_infer::models::registry()`.
+- The Config page: Gumka's version, and the models, built from `models.toml` via
+  `gumka_infer::models::registry()`.
 - A color-managed preview ([color.md](color.md)).
 - `cargo xtask bundle`: an unsigned `Gumka.app` and disk image with the models bundled, or on
   Linux an AppImage with ONNX Runtime and the models ([packaging.md](packaging.md)).
