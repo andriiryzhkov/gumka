@@ -1,7 +1,6 @@
-# On a tag release-<version> (e.g. release-0.2.0): CI, then the universal macOS app and the
-# Linux AppImage, published together as a GitHub release with generated notes. The tag's
-# version must match Cargo.toml's; a version with a hyphen (0.2.0-beta.1) is published as a
-# pre-release.
+# On a tag release-X.Y.Z (e.g. release-0.2.0): CI, then the universal macOS app and the Linux
+# AppImage, published together as a GitHub release with generated notes. The tag is the version
+# (see docs/packaging.md).
 name: Release
 
 on:
@@ -25,17 +24,28 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install Rust (the version in rust-toolchain.toml)
-        run: rustup toolchain install
+        with:
+          # The tags and main's history, to check the tag against them; no files needed.
+          fetch-depth: 0
+          filter: blob:none
       - name: Check the version
         id: version
         run: |
+          fail() { echo "::error::$1 Delete the tag and tag again (see docs/packaging.md)."; exit 1; }
           version="${GITHUB_REF_NAME#release-}"
-          cargo_version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "gumka-app") | .version')
-          if [ "$version" != "$cargo_version" ]; then
-            echo "::error::The tag says $version, but Cargo.toml says $cargo_version. Set the version in Cargo.toml, commit, and tag that commit release-$cargo_version."
-            exit 1
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || fail "The tag $GITHUB_REF_NAME isn't release-X.Y.Z (for example release-0.2.0)."
+          # The builds read the version from the commit's release tag, so it has only this one.
+          others=$(git tag --points-at HEAD --list 'release-[0-9]*' | grep -vx "$GITHUB_REF_NAME" \
+            | paste -sd ' ' - || true)
+          [ -z "$others" ] || fail "This commit is also tagged $others."
+          # Releases only move forward: tagged on main, above every earlier release.
+          git merge-base --is-ancestor HEAD origin/main \
+            || fail "$GITHUB_REF_NAME isn't on main; push the commit to main first."
+          newest=$(git tag --list 'release-[0-9]*' | grep -vx "$GITHUB_REF_NAME" | sed 's/^release-//' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [ -n "$newest" ] && [ "$(printf '%s\n' "$newest" "$version" | sort -V | tail -n 1)" != "$version" ]; then
+            fail "$version isn't above the last release, $newest."
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -47,6 +57,10 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history and tags, for the version (see docs/packaging.md), without old files.
+          fetch-depth: 0
+          filter: blob:none
       - name: Install Rust (the version in rust-toolchain.toml)
         run: rustup toolchain install
       - name: Add the Intel target
@@ -62,9 +76,12 @@ jobs:
       - name: Build the app and disk image
         run: cargo xtask bundle --universal
       - name: Collect the disk image
+        # Named by the version xtask read from git, which must be the tag's.
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir dist
-          mv target/bundle/Gumka-*-universal.dmg dist/
+          mv "target/bundle/Gumka-$VERSION-universal.dmg" dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gumka-release-macos
@@ -79,6 +96,10 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history and tags, for the version (see docs/packaging.md), without old files.
+          fetch-depth: 0
+          filter: blob:none
       - name: Install the packaging tools
         run: sudo apt-get update && sudo apt-get install -y squashfs-tools desktop-file-utils zsync
       - name: Install Rust (the version in rust-toolchain.toml)
@@ -95,9 +116,12 @@ jobs:
       - name: Build the AppImage
         run: cargo xtask bundle
       - name: Collect the AppImage
+        # Named by the version xtask read from git, which must be the tag's.
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir dist
-          mv target/bundle/Gumka-*-x86_64.AppImage target/bundle/Gumka-*-x86_64.AppImage.zsync dist/
+          mv "target/bundle/Gumka-$VERSION-x86_64.AppImage" "target/bundle/Gumka-$VERSION-x86_64.AppImage.zsync" dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gumka-release-linux
@@ -121,8 +145,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          prerelease=()
-          case "$VERSION" in *-*) prerelease=(--prerelease --latest=false) ;; esac
           cat > notes.md <<'EOF'
           **macOS** (macOS 13 or later, Apple Silicon and Intel): the `.dmg`. The app isn't
           signed, so macOS blocks it at first. Before opening the disk image, remove the
@@ -147,5 +169,5 @@ jobs:
           ./Gumka-*-x86_64.AppImage
           ```
           EOF
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag "${prerelease[@]}" \
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
             --title "Gumka $VERSION" --generate-notes --notes "$(cat notes.md)"

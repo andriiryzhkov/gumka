@@ -18,7 +18,8 @@ once for the pinned toolchain). It:
 2. builds `gumka-app` in release mode;
 3. assembles `Gumka.app`:
    - `Contents/MacOS/Gumka`, the executable;
-   - `Contents/Info.plist`: identifier `io.github.andriiryzhkov.gumka`, the workspace version,
+   - `Contents/Info.plist`: identifier `io.github.andriiryzhkov.gumka`, the version (see
+     [Versions and releases](#versions-and-releases)),
      `LSMinimumSystemVersion` 13.0 (matching `MACOSX_DEPLOYMENT_TARGET`), the photography
      category, high resolution, and the document types (TIFF, PNG, JPEG as an editor, rank
      Alternate) that list Gumka under Open With and Edit With;
@@ -86,8 +87,8 @@ newest GitHub release, never a pre-release) and
 nightly (`--nightly`), so each follows its own channel. The nightly names the newest pre-release,
 not its tag: Gear Lever takes only `latest`, `latest-pre` and `latest-all` (4.6.2: any other
 value means the latest stable release, which has no nightly), and looks through the releases for
-the first with a matching file. AppImageUpdate takes the newest pre-release as it is, so right
-after a beta release (also a pre-release) it finds no nightly until the next nightly build.
+the first with a matching file. AppImageUpdate takes the newest pre-release as it is, which is
+always the nightly: releases are never pre-releases.
 Gear Lever compares the `.zsync`'s SHA-1 with the AppImage's to see whether there is an update,
 but downloads the whole new AppImage. The `.zsync` file names its AppImage by
 file name, so the two are published side by side and not renamed: that is why the nightly is
@@ -129,7 +130,7 @@ Three GitHub Actions workflows in `.github/workflows`:
 |---|---|---|
 | `ci.yml` | every pull request (and when called by the other two) | format, clippy and tests on macOS, Windows and Linux, warnings as errors |
 | `nightly.yml` | every push to `main` | CI, then `cargo xtask bundle` on macOS and on Linux (`ubuntu-22.04`) side by side; a last job replaces the rolling **nightly** pre-release (tag `nightly`, `Gumka-nightly-arm64.dmg`, and `Gumka-nightly-x86_64.AppImage` with its `.zsync`) once both are built. Each is also kept as a workflow artifact for 14 days. Only the newest push is built. |
-| `release.yml` | a pushed tag `release-<version>` | CI and a check of the tag's version, then `cargo xtask bundle --universal` on macOS and `cargo xtask bundle` on Linux; a last job publishes the GitHub release `Gumka <version>` with the disk image, the AppImage and its `.zsync`, and generated notes. A version with a hyphen (`0.2.0-beta.1`) is a pre-release. |
+| `release.yml` | a pushed tag `release-X.Y.Z` | CI and a check of the tag (see [Versions and releases](#versions-and-releases)), then `cargo xtask bundle --universal` on macOS and `cargo xtask bundle` on Linux; a last job publishes the GitHub release `Gumka X.Y.Z` with the disk image, the AppImage and its `.zsync`, and generated notes. |
 
 The models are downloaded on the runner by `cargo xtask models`, cached by the hash of
 `models.toml` (the Linux key also names the OS, so the two platforms' models don't share a
@@ -148,16 +149,64 @@ Nothing in the workflows moves on its own:
 - The Rust version comes from `rust-toolchain.toml`; rustup, preinstalled on the runners,
   installs it. No toolchain action is used.
 
-To release a version:
+The release jobs write with the workflow's own token (`contents: write`); nothing else is needed
+in the repository's settings unless an organization policy limits what workflows may write.
 
-1. Set `version` under `[workspace.package]` in `Cargo.toml` (this is the app's version and
-   the one in `Info.plist`), build once so `Cargo.lock` follows, and commit.
-2. Tag that commit and push the tag:
-   `git tag release-0.2.0 && git push origin release-0.2.0`.
+## Versions and releases
 
-The workflow refuses a tag whose version isn't the one in `Cargo.toml`. The release jobs write
-with the workflow's own token (`contents: write`); nothing else is needed in the repository's
-settings unless an organization policy limits what workflows may write.
+Gumka's version is `X.Y.Z`, and it comes from git tags, never from a file: `version` in
+`Cargo.toml` stays `0.0.0` and isn't Gumka's. `cargo xtask bundle` reads it with
+`git describe --tags --long --match 'release-[0-9]*'` (so a tag such as `release-notes` isn't
+one):
+
+| The commit built | Its version |
+|---|---|
+| tagged `release-0.2.0` | `0.2.0` |
+| 12 commits after that tag | `0.2.0+12~gabc1234`: the commits since, and the commit |
+| before the first release tag | `0.0.0+<all commits>~g<commit>` |
+| a source archive, without `.git` | `0.0.0` |
+
+The version names the disk image and the AppImage (a nightly's names say `nightly` instead), and
+goes into the AppImage's desktop entry (`X-AppImage-Version`) and the licenses' README. macOS's
+`Info.plist` takes numbers only: `CFBundleShortVersionString` is `X.Y.Z`, and `CFBundleVersion`
+is the number of commits up to the one built, which only grows. With several copies installed
+(a release and a nightly), macOS opens the one with the highest `CFBundleVersion` when a photo
+editor asks for Gumka. A shallow clone has no tags, so `cargo xtask bundle` refuses one: the
+nightly and release jobs check out the whole history (`fetch-depth: 0`), though not its old
+files (`filter: blob:none`). The rolling `nightly` tag isn't a release tag, so versions ignore
+it.
+
+Releases only move forward: each one is tagged on `main` with a higher version than the last,
+so it is always the newest build there is. That keeps it GitHub's latest release (where release
+AppImages update from) and gives it a higher build number than any earlier build on macOS. For
+now, a release line gets fixes only until the next `Y`: fixes come as the next `Z` while `main`
+holds nothing but fixes since the last release, and once a new feature is in, the next release
+raises `Y`. No release is made for an earlier line, and there are no betas or release
+candidates.
+
+A release is tested as nightlies, which carry their own versions. Before one, `main` takes
+fixes only (a code freeze, announced with the version it leads to); when no more come in, the
+commit of the last nightly is tagged:
+
+```sh
+git tag -a release-0.2.0 -m "Gumka 0.2.0"
+git push origin release-0.2.0
+```
+
+The number after the last release's (the first release is `0.1.0`):
+
+- `Z` (`0.2.1`): fixes only, nothing else since the last release.
+- `Y` (`0.3.0`, `Z` back to 0): new tools or features, or changes users notice; the `0.2` line
+  ends.
+- `X` (`1.0.0`): the first stable release; after it, a change in what users rely on (file
+  formats, what a save keeps, defaults).
+
+Before building, the workflow refuses a tag that isn't `release-` and three numbers, one on a
+commit that has another release tag, one not on `main`, and one not above every earlier
+release. The build jobs fail if the version they read isn't the tag's. A pushed tag stays: if
+a release turns out wrong, release the next `Z`. Only a tag that was refused, or whose release
+failed before publishing, is deleted (`git push origin --delete release-0.2.0`,
+`git tag -d release-0.2.0`) and made again.
 
 ## How the app finds its models
 

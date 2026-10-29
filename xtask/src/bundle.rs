@@ -19,8 +19,8 @@ use std::time::Instant;
 use gumka_infer::{coreml, models};
 
 use crate::package::{
-    IDENTIFIER, NAME, VERSION, check_models, copy, create_dir, read, render_png, repository,
-    run_command, size_of, step, target_dir, write, write_licenses,
+    IDENTIFIER, NAME, Version, check_models, copy, create_dir, read, render_png, repository,
+    run_command, size_of, step, target_dir, version, write, write_licenses,
 };
 
 const USAGE: &str = "usage: cargo xtask bundle [--universal] [--no-dmg]";
@@ -43,6 +43,8 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let root = repository();
     let out = target_dir(&root).join("bundle");
     let started = Instant::now();
+    let version = version(&root)?;
+    println!("{NAME} {} (build {})", version.full, version.build);
 
     step("checking the models");
     let models_dir = models::repository_dir();
@@ -61,7 +63,7 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     create_dir(&contents.join("MacOS"))?;
     create_dir(&resources)?;
     copy(&exe, &contents.join("MacOS").join(NAME))?;
-    write(&contents.join("Info.plist"), &info_plist())?;
+    write(&contents.join("Info.plist"), &info_plist(&version))?;
     write(&contents.join("PkgInfo"), "APPL????")?;
     lint_plist(&contents.join("Info.plist"))?;
     make_icon(&root, &out, &resources.join("AppIcon.icns"))?;
@@ -73,11 +75,18 @@ pub fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     } else {
         &[INTEL]
     };
-    write_licenses(&root, &bundled, targets, &resources.join("licenses"), "")?;
+    write_licenses(
+        &root,
+        &version.full,
+        &bundled,
+        targets,
+        &resources.join("licenses"),
+        "",
+    )?;
     println!("  {} ({})", app.display(), size_of(&app));
 
     if dmg {
-        let image = out.join(format!("{NAME}-{VERSION}-{arch}.dmg"));
+        let image = out.join(format!("{NAME}-{}-{arch}.dmg", version.full));
         step(&format!("making {}", image.display()));
         make_dmg(&app, &out, &image)?;
         println!("  {} ({})", image.display(), size_of(&image));
@@ -129,7 +138,8 @@ fn build(root: &Path, universal: bool) -> Result<(PathBuf, &'static str), String
     Ok((fat, "universal"))
 }
 
-fn info_plist() -> String {
+fn info_plist(version: &Version) -> String {
+    let release = version.release();
     let entries = [
         (
             "CFBundleDevelopmentRegion",
@@ -150,9 +160,12 @@ fn info_plist() -> String {
         ("CFBundlePackageType", "<string>APPL</string>".to_owned()),
         (
             "CFBundleShortVersionString",
-            format!("<string>{VERSION}</string>"),
+            format!("<string>{release}</string>"),
         ),
-        ("CFBundleVersion", format!("<string>{VERSION}</string>")),
+        (
+            "CFBundleVersion",
+            format!("<string>{}</string>", version.build),
+        ),
         (
             "LSApplicationCategoryType",
             "<string>public.app-category.photography</string>".to_owned(),
@@ -281,4 +294,29 @@ fn make_dmg(app: &Path, out: &Path, image: &Path) -> Result<(), String> {
     }
     let _ = fs::remove_dir_all(&staging);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// macOS takes numbers only: `X.Y.Z` as the version, the commit count as the build.
+    #[test]
+    fn the_info_plist_has_the_version_in_numbers() {
+        let plist = info_plist(&Version {
+            full: "0.2.0+12~gabc1234".into(),
+            build: 612,
+        });
+        for entry in [
+            "<key>CFBundleShortVersionString</key>\n\t<string>0.2.0</string>",
+            "<key>CFBundleVersion</key>\n\t<string>612</string>",
+        ] {
+            assert!(plist.contains(entry), "{entry}\n{plist}");
+        }
+        let release = Version {
+            full: "0.2.0".into(),
+            build: 600,
+        };
+        assert_eq!(release.release(), "0.2.0");
+    }
 }
